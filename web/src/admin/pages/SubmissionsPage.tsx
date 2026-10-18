@@ -47,8 +47,8 @@ export function SubmissionsPage() {
     setNotice(null);
     setError(null);
     try {
-      const r = await api.retryExcel(s.id);
-      setNotice(r.outcome === 'complete' ? `${s.reference}: Excel updated.` : `${s.reference}: Excel update still failing; it will be retried automatically.`);
+      const r = await api.retryReport(s.id);
+      setNotice(r.outcome === 'complete' ? `${s.reference}: report sheet updated.` : `${s.reference}: report update still failing; it will be retried automatically.`);
       load();
     } catch (e) {
       setError(errorMessage(e));
@@ -112,13 +112,13 @@ export function SubmissionsPage() {
                     {s.failureReason && <div className="small muted">{s.failureStage}: {s.failureReason}</div>}
                     {s.status === 'excel_pending' && (
                       <div className="small muted">
-                        Attempt {s.excelAttempts}
-                        {s.excelNextAttemptAt ? `, next ${fmtDate(s.excelNextAttemptAt)}` : ''}
-                        {s.excelLastError ? ` – ${s.excelLastError}` : ''}
+                        Attempt {s.reportAttempts}
+                        {s.reportNextAttemptAt ? `, next ${fmtDate(s.reportNextAttemptAt)}` : ''}
+                        {s.reportLastError ? ` – ${s.reportLastError}` : ''}
                       </div>
                     )}
                     {(s.status === 'excel_pending' || (s.status === 'failed' && s.failureStage === 'excel')) && (
-                      <button type="button" className="btn small" onClick={() => retry(s)}>Retry Excel</button>
+                      <button type="button" className="btn small" onClick={() => retry(s)}>Retry report</button>
                     )}
                   </td>
                   <td className="small">

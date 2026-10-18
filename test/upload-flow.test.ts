@@ -1,14 +1,14 @@
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { adminCall, call, createPublishedSession, FakeMicrosoft, PDF_BYTES, resetDb, seedConnection, withAccess } from './helpers';
+import { adminCall, BASE, call, createPublishedSession, FakeGoogle, FOLDER_ID, PDF_BYTES, resetDb, seedConnection, withAccess } from './helpers';
 
-let ms: FakeMicrosoft;
+let ms: FakeGoogle;
 let logs: string[];
 
 beforeEach(async () => {
   await resetDb();
   await seedConnection();
-  ms = new FakeMicrosoft();
+  ms = new FakeGoogle();
   vi.spyOn(globalThis, 'fetch').mockImplementation(withAccess(ms.handler) as typeof fetch);
   logs = [];
   for (const level of ['log', 'warn', 'error'] as const) {
@@ -30,8 +30,8 @@ const complete = (sub: { submissionId: string; submissionSecret: string }, fileI
   call('POST', `/api/public/submissions/${sub.submissionId}/files/${fileId}/complete`, { body: { secret: sub.submissionSecret } });
 const status = async (id: string) => (await env.DB.prepare('SELECT * FROM submissions WHERE id = ?').bind(id).first<Record<string, unknown>>())!;
 
-describe('direct-to-OneDrive upload flow', () => {
-  it('runs end to end: upload session, verification, Excel row, complete', async () => {
+describe('direct-to-Google-Drive upload flow', () => {
+  it('runs end to end: upload session, verification, report row, complete', async () => {
     const { session, sub } = await startSubmission();
     const fileId = sub.files[0]!.fileId;
     expect((await status(sub.submissionId)).status).toBe('created');
@@ -40,11 +40,15 @@ describe('direct-to-OneDrive upload flow', () => {
     expect(u.status).toBe(200);
     expect(u.headers.get('Cache-Control')).toBe('no-store');
     const { uploadUrl: url } = (await u.json()) as { uploadUrl: string };
-    expect(url).toMatch(/^https:\/\/contoso-my\.sharepoint\.com\/upload\//);
+    expect(url).toMatch(/^https:\/\/www\.googleapis\.com\/upload\/drive\/v3\/files\?uploadType=resumable&upload_id=/);
     expect((await status(sub.submissionId)).status).toBe('uploading');
     // Upload session is created in the configured folder with the server-generated name.
     const us = ms.uploadSessions.get(url)!;
-    expect(us.parentId).toBe('FOLDER1');
+    expect(us.parentId).toBe(FOLDER_ID);
+    // Drive enforces the declared size, and CORS is enabled for our origin only.
+    expect(us.size).toBe(PDF_BYTES.length);
+    expect(us.origin).toBe(BASE);
+    expect(us.mimeType).toBe('application/pdf');
     expect(us.name).toMatch(/_Menu_photo\.pdf$/);
 
     // Not finished yet -> completion refused.
@@ -59,15 +63,15 @@ describe('direct-to-OneDrive upload flow', () => {
 
     const row = await status(sub.submissionId);
     expect(row.status).toBe('complete');
-    expect(ms.tableRows).toHaveLength(1);
-    const cols = ms.tableColumns;
-    const excelRow = Object.fromEntries(cols.map((c, i) => [c, ms.tableRows[0]![i]]));
-    expect(excelRow).toMatchObject({
+    expect(ms.rows).toHaveLength(1);
+    const cols = ms.header;
+    const reportRow = Object.fromEntries(cols.map((c, i) => [c, ms.rows[0]![i]]));
+    expect(reportRow).toMatchObject({
       submission_id: sub.reference,
       upload_session_id: session.id,
       original_filename: 'Menu photo.pdf',
       file_size_bytes: PDF_BYTES.length,
-      onedrive_folder_path: '/Uploads',
+      drive_folder_path: '/Uploads',
       processing_status: 'complete',
       table_number: '12',
       description: 'Front',
@@ -75,15 +79,15 @@ describe('direct-to-OneDrive upload flow', () => {
     const file = await env.DB.prepare('SELECT * FROM submission_files WHERE id = ?').bind(fileId).first<Record<string, unknown>>();
     expect(file).toMatchObject({ status: 'uploaded', excel_status: 'inserted', content_check: 'match', actual_size: PDF_BYTES.length });
     expect(file!.drive_item_id).toBeTruthy();
-    expect(file!.onedrive_path).toMatch(/^\/Uploads\/\d{8}_/);
+    expect(file!.drive_path).toMatch(/^\/Uploads\/\d{8}_/);
     expect(file!.web_url).toMatch(/^https:/);
 
     // Access tokens were only ever sent to Graph, never to the browser.
     expect(JSON.stringify(body)).not.toContain('access-');
-    expect(ms.graphCalls.every((c) => c.auth === 'Bearer access-0')).toBe(true);
+    expect(ms.apiCalls.every((c) => c.auth === 'Bearer access-0')).toBe(true);
   });
 
-  it('is idempotent: repeated completion does not duplicate Excel rows', async () => {
+  it('is idempotent: repeated completion does not duplicate report rows', async () => {
     const { sub } = await startSubmission();
     const fileId = sub.files[0]!.fileId;
     const { uploadUrl: url } = (await (await uploadUrl(sub, fileId)).json()) as { uploadUrl: string };
@@ -91,7 +95,7 @@ describe('direct-to-OneDrive upload flow', () => {
     const results = await Promise.all([complete(sub, fileId), complete(sub, fileId), complete(sub, fileId)]);
     expect(results.every((r) => r.status === 200)).toBe(true);
     expect((await complete(sub, fileId)).status).toBe(200);
-    expect(ms.tableRows).toHaveLength(1);
+    expect(ms.rows).toHaveLength(1);
     expect((await status(sub.submissionId)).status).toBe('complete');
   });
 
@@ -126,10 +130,10 @@ describe('direct-to-OneDrive upload flow', () => {
     const { sub } = await startSubmission();
     const fileId = sub.files[0]!.fileId;
     const { uploadUrl: url } = (await (await uploadUrl(sub, fileId)).json()) as { uploadUrl: string };
-    ms.completeUpload(url, new Uint8Array([...PDF_BYTES, 1, 2, 3]));
+    const fileDriveId = ms.completeUpload(url, new Uint8Array([...PDF_BYTES, 1, 2, 3]));
     const res = await complete(sub, fileId);
     expect(res.status).toBe(422);
-    expect(ms.files.size).toBe(0); // removed from OneDrive (recycle bin)
+    expect(ms.files.get(fileDriveId)!.trashed).toBe(true); // moved to the Drive trash
     const f = await env.DB.prepare('SELECT status, failure_reason FROM submission_files WHERE id = ?').bind(fileId).first();
     expect(f).toEqual({ status: 'failed', failure_reason: 'size_mismatch' });
     // The uploader may retry the file.
@@ -143,14 +147,14 @@ describe('direct-to-OneDrive upload flow', () => {
     const { sub } = await startSubmission();
     const fileId = sub.files[0]!.fileId;
     const { uploadUrl: url } = (await (await uploadUrl(sub, fileId)).json()) as { uploadUrl: string };
-    ms.completeUpload(url, fake);
+    const fakeId = ms.completeUpload(url, fake);
     const res = await complete(sub, fileId);
     expect(res.status).toBe(422);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('file_rejected');
-    expect(ms.files.size).toBe(0);
+    expect(ms.files.get(fakeId)!.trashed).toBe(true);
   });
 
-  it('waits for every file before reporting to Excel', async () => {
+  it('waits for every file before reporting', async () => {
     const { sub } = await startSubmission([
       { name: 'one.pdf', size: PDF_BYTES.length, type: '' },
       { name: 'two.pdf', size: PDF_BYTES.length, type: '' },
@@ -161,16 +165,16 @@ describe('direct-to-OneDrive upload flow', () => {
       await complete(sub, f.fileId);
       expect((await status(sub.submissionId)).status).toBe(i === 0 ? 'uploading' : 'complete');
     }
-    expect(ms.tableRows).toHaveLength(2);
+    expect(ms.rows).toHaveLength(2);
   });
 
-  it('reveals OneDrive links only when the session allows it', async () => {
-    const { sub } = await startSubmission(undefined, { showOneDriveLinks: true });
+  it('reveals Drive links only when the session allows it', async () => {
+    const { sub } = await startSubmission(undefined, { showDriveLinks: true });
     const fileId = sub.files[0]!.fileId;
     const { uploadUrl: url } = (await (await uploadUrl(sub, fileId)).json()) as { uploadUrl: string };
     ms.completeUpload(url, PDF_BYTES);
     const body = (await (await complete(sub, fileId)).json()) as { webUrl?: string };
-    expect(body.webUrl).toMatch(/^https:\/\/contoso-my\.sharepoint\.com/);
+    expect(body.webUrl).toMatch(/^https:\/\/drive\.google\.com\/file\/d\//);
   });
 
   it('never logs upload URLs, tokens, share tokens or submitted values', async () => {
@@ -181,7 +185,7 @@ describe('direct-to-OneDrive upload flow', () => {
     await complete(sub, fileId);
     const all = logs.join('\n');
     expect(logs.length).toBeGreaterThan(0);
-    expect(all).not.toContain('sharepoint.com');
+    expect(all).not.toContain('upload_id');
     expect(all).not.toContain(session.token);
     expect(all).not.toContain(sub.submissionSecret);
     expect(all).not.toContain('access-0');

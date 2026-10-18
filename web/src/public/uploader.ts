@@ -1,11 +1,12 @@
-// Uploads one file straight to a Microsoft Graph resumable upload session.
-// File bytes go from the browser to Microsoft only; the Worker never sees them.
+// Uploads one file straight to a Google Drive resumable upload session.
+// File bytes go from the browser to Google only; the Worker never sees them.
 //
-// - Chunks are a multiple of 320 KiB (required by Graph) except the last.
-// - No Authorization header is sent: the upload URL is pre-authenticated.
-// - Network errors and 5xx responses are retried with backoff after asking the
-//   upload session which byte ranges it still expects (resume, not restart).
-// - A 404 means the upload session expired or was lost; the caller then asks
+// - Chunks are a multiple of 256 KiB (required by Drive) except the last.
+// - No Authorization header is sent: the session URI is the capability.
+// - Drive answers 308 with a Range header after each non-final chunk. Network
+//   errors and 5xx responses are retried with backoff after asking the session
+//   how many bytes it has (resume, not restart).
+// - 404/410 means the session expired or was cancelled; the caller then asks
 //   the Worker for a fresh session and the file restarts.
 
 export class UploadSessionGoneError extends Error {
@@ -22,7 +23,7 @@ export class UploadAbortedError extends Error {
 
 interface PutResult {
   status: number;
-  body: string;
+  range: string | null;
 }
 
 function put(url: string, blob: Blob, rangeHeader: string, onProgress: (loaded: number) => void, signal: AbortSignal): Promise<PutResult> {
@@ -31,9 +32,9 @@ function put(url: string, blob: Blob, rangeHeader: string, onProgress: (loaded: 
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Range', rangeHeader);
     xhr.upload.onprogress = (e) => onProgress(e.loaded);
-    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-    xhr.onerror = () => resolve({ status: 0, body: '' });
-    xhr.ontimeout = () => resolve({ status: 0, body: '' });
+    xhr.onload = () => resolve({ status: xhr.status, range: xhr.getResponseHeader('Range') });
+    xhr.onerror = () => resolve({ status: 0, range: null });
+    xhr.ontimeout = () => resolve({ status: 0, range: null });
     xhr.onabort = () => reject(new UploadAbortedError());
     const abort = () => xhr.abort();
     signal.addEventListener('abort', abort, { once: true });
@@ -41,26 +42,27 @@ function put(url: string, blob: Blob, rangeHeader: string, onProgress: (loaded: 
   });
 }
 
-/** Parses Graph's nextExpectedRanges ("12345-" or "12345-67890") into a start offset. */
-export function nextOffsetFrom(body: string): number | null {
-  try {
-    const json = JSON.parse(body) as { nextExpectedRanges?: string[] };
-    const first = json.nextExpectedRanges?.[0];
-    if (!first) return null;
-    const start = Number(first.split('-')[0]);
-    return Number.isSafeInteger(start) && start >= 0 ? start : null;
-  } catch {
-    return null;
-  }
+/**
+ * Parses Drive's 308 Range header ("bytes=0-12345") into the next offset.
+ * No header means no bytes stored yet (0); null means the header was unreadable.
+ */
+export function nextOffsetFrom(range: string | null, hasHeader: boolean): number | null {
+  if (!range) return hasHeader ? null : 0;
+  const m = /bytes=0-(\d+)/.exec(range);
+  if (!m) return null;
+  const end = Number(m[1]);
+  return Number.isSafeInteger(end) ? end + 1 : null;
 }
 
-async function queryOffset(url: string, signal: AbortSignal): Promise<number | 'gone' | null> {
+/** Asks the session how many bytes it holds: PUT with an empty body and "bytes *\/total". */
+async function queryOffset(url: string, size: number, signal: AbortSignal): Promise<number | 'gone' | 'done' | null> {
   try {
-    const res = await fetch(url, { method: 'GET', signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
-    if (res.status === 404) return 'gone';
-    if (!res.ok) return null;
-    return nextOffsetFrom(await res.text());
-  } catch (e) {
+    const res = await fetch(url, { method: 'PUT', signal, credentials: 'omit', referrerPolicy: 'no-referrer', headers: { 'Content-Range': `bytes */${size}` } });
+    if (res.status === 404 || res.status === 410) return 'gone';
+    if (res.status === 200 || res.status === 201) return 'done';
+    if (res.status !== 308) return null;
+    return nextOffsetFrom(res.headers.get('Range'), false);
+  } catch {
     if (signal.aborted) throw new UploadAbortedError();
     return null;
   }
@@ -98,22 +100,25 @@ export async function uploadToSession(opts: {
       onProgress(size);
       return;
     }
-    if (res.status === 202) {
+    if (res.status === 308) {
       failures = 0;
-      offset = nextOffsetFrom(res.body) ?? end + 1;
+      // If the Range header is not readable, the accepted chunk is the best estimate.
+      offset = res.range ? (nextOffsetFrom(res.range, true) ?? end + 1) : end + 1;
       onProgress(offset);
       continue;
     }
-    if (res.status === 404) throw new UploadSessionGoneError();
-    // 409: the file was already committed (e.g. a previous attempt finished). The Worker verifies it.
-    if (res.status === 409) return;
+    if (res.status === 404 || res.status === 410) throw new UploadSessionGoneError();
 
-    // 416 (range mismatch), 5xx, 429 or network failure: resynchronise and retry.
+    // 5xx, 429, other 4xx or network failure: resynchronise and retry.
     failures++;
     if (failures > maxRetries) throw new Error('The upload keeps failing. Check your connection and try again.');
     await wait(Math.min(30_000, 1000 * 2 ** (failures - 1)), signal);
-    const resumed = await queryOffset(uploadUrl, signal);
+    const resumed = await queryOffset(uploadUrl, size, signal);
     if (resumed === 'gone') throw new UploadSessionGoneError();
+    if (resumed === 'done') {
+      onProgress(size);
+      return;
+    }
     if (resumed !== null) offset = resumed;
     onProgress(offset);
   }

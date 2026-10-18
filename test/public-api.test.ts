@@ -1,13 +1,13 @@
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { adminCall, call, createPublishedSession, FakeMicrosoft, resetDb, seedConnection, withAccess } from './helpers';
+import { adminCall, call, createPublishedSession, FakeGoogle, resetDb, seedConnection, withAccess } from './helpers';
 
-let ms: FakeMicrosoft;
+let ms: FakeGoogle;
 
 beforeEach(async () => {
   await resetDb();
   await seedConnection();
-  ms = new FakeMicrosoft();
+  ms = new FakeGoogle();
   vi.spyOn(globalThis, 'fetch').mockImplementation(withAccess(ms.handler) as typeof fetch);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -24,7 +24,7 @@ describe('public link states', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ title: 'Table photos', fileRules: { allowedExtensions: ['pdf', 'png'] } });
-    expect(JSON.stringify(body)).not.toMatch(/FOLDER1|driveId|excel/i);
+    expect(JSON.stringify(body)).not.toMatch(/FOLDER123456|folder|spreadsheet|column/i);
   });
 
   it('rejects invalid and malformed tokens', async () => {
@@ -115,8 +115,8 @@ describe('server-side submission validation', () => {
   });
 });
 
-describe('publishing requires a valid Excel mapping', () => {
-  it('refuses to publish when a field has no matching Excel column', async () => {
+describe('publishing requires valid report columns', () => {
+  it('refuses to publish when a field has no matching report column', async () => {
     const res = await adminCall('POST', '/sessions', (await import('./helpers')).sessionConfig({
       fields: [{ label: 'Colour', key: 'colour', type: 'select', required: true, options: ['Red'] }],
     }));
@@ -124,12 +124,12 @@ describe('publishing requires a valid Excel mapping', () => {
     const pub = await adminCall('POST', `/sessions/${session.id}/publish`, {});
     expect(pub.status).toBe(422);
     expect(((await pub.json()) as { error: { message: string } }).error.message).toContain('"colour"');
-    ms.tableColumns.push('colour');
+    ms.header.push('colour');
     expect((await adminCall('POST', `/sessions/${session.id}/publish`, {})).status).toBe(200);
   });
 
-  it('refuses to publish without a connected Excel table', async () => {
-    await env.DB.prepare('DELETE FROM excel_target').run();
+  it('refuses to publish without a report sheet', async () => {
+    await env.DB.prepare('DELETE FROM sheet_target').run();
     const res = await adminCall('POST', '/sessions', (await import('./helpers')).sessionConfig());
     const { session } = (await res.json()) as { session: { id: string } };
     const pub = await adminCall('POST', `/sessions/${session.id}/publish`, {});
@@ -137,10 +137,10 @@ describe('publishing requires a valid Excel mapping', () => {
   });
 });
 
-describe('Microsoft connection', () => {
-  it('refuses new submissions without reserving a slot when OneDrive is not connected', async () => {
+describe('Google connection', () => {
+  it('refuses new submissions without reserving a slot when Google is not connected', async () => {
     const { id, token } = await createPublishedSession();
-    await env.DB.prepare("UPDATE ms_connection SET status = 'needs_reauth'").run();
+    await env.DB.prepare("UPDATE google_connection SET status = 'needs_reauth'").run();
     const res = await submit(token);
     expect(res.status).toBe(503);
     const row = await env.DB.prepare('SELECT submission_count FROM upload_sessions WHERE id = ?').bind(id).first<{ submission_count: number }>();

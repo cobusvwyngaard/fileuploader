@@ -1,13 +1,12 @@
 /**
- * Microsoft Graph requires every non-final chunk of a resumable upload to be a
- * multiple of 320 KiB. 16 x 320 KiB = 5 MiB, inside the 5-10 MiB range
- * Microsoft recommends.
+ * Google Drive requires every non-final chunk of a resumable upload to be a
+ * multiple of 256 KiB. 20 x 256 KiB = 5 MiB.
  */
-export const GRAPH_CHUNK_MULTIPLE = 320 * 1024;
-export const UPLOAD_CHUNK_SIZE = 16 * GRAPH_CHUNK_MULTIPLE;
+export const DRIVE_CHUNK_MULTIPLE = 256 * 1024;
+export const UPLOAD_CHUNK_SIZE = 20 * DRIVE_CHUNK_MULTIPLE;
 
-/** OneDrive for Business single-file limit is 250 GB. */
-export const HARD_MAX_FILE_SIZE_BYTES = 250 * 1024 ** 3;
+/** Keep well inside Google Drive's per-file limit (5 TB) and typical storage quotas. */
+export const HARD_MAX_FILE_SIZE_BYTES = 50 * 1024 ** 3;
 export const HARD_MAX_FILES_PER_SUBMISSION = 20;
 export const MAX_FIELDS = 30;
 export const MAX_FIELD_VALUE_LENGTH = 2000;
@@ -30,10 +29,10 @@ export const BLOCKED_EXTENSIONS = new Set([
 ]);
 
 /**
- * Column names every reporting table must contain. Order is irrelevant: rows are
- * built by matching header names.
+ * Column names the report sheet's header row must contain. Order is irrelevant:
+ * rows are built by matching header names.
  */
-export const STANDARD_EXCEL_COLUMNS = [
+export const STANDARD_REPORT_COLUMNS = [
   'submission_id',
   'upload_session_id',
   'session_title',
@@ -42,8 +41,8 @@ export const STANDARD_EXCEL_COLUMNS = [
   'stored_filename',
   'file_size_bytes',
   'content_type',
-  'onedrive_folder_path',
-  'onedrive_web_url',
+  'drive_folder_path',
+  'drive_web_url',
   'processing_status',
 ] as const;
-export type StandardExcelColumn = (typeof STANDARD_EXCEL_COLUMNS)[number];
+export type StandardReportColumn = (typeof STANDARD_REPORT_COLUMNS)[number];

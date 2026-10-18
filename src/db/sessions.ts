@@ -16,8 +16,7 @@ export interface SessionRow {
   status: SessionStatus;
   share_token_hash: string;
   share_token_enc: string;
-  folder_drive_id: string | null;
-  folder_item_id: string | null;
+  folder_id: string | null;
   folder_path: string | null;
   folder_web_url: string | null;
   expires_at: number | null;
@@ -25,8 +24,8 @@ export interface SessionRow {
   submission_count: number;
   file_rules_json: string;
   fields_json: string;
-  show_onedrive_links: number;
-  excel_validated_at: number | null;
+  show_drive_links: number;
+  report_validated_at: number | null;
   created_by: string;
   created_at: number;
   updated_at: number;
@@ -85,15 +84,14 @@ export function configColumns(cfg: SessionConfigInput) {
   return {
     title: cfg.title,
     instructions: cfg.instructions,
-    folder_drive_id: cfg.folder?.driveId ?? null,
-    folder_item_id: cfg.folder?.itemId ?? null,
+    folder_id: cfg.folder?.id ?? null,
     folder_path: cfg.folder?.path ?? null,
     folder_web_url: cfg.folder?.webUrl ?? null,
     expires_at: cfg.expiresAt ? new Date(cfg.expiresAt).getTime() : null,
     max_submissions: cfg.maxSubmissions,
     file_rules_json: JSON.stringify(cfg.fileRules),
     fields_json: JSON.stringify(cfg.fields),
-    show_onedrive_links: cfg.showOneDriveLinks ? 1 : 0,
+    show_drive_links: cfg.showDriveLinks ? 1 : 0,
   };
 }
 
@@ -102,14 +100,14 @@ export function configOf(row: SessionRow): SessionConfigInput {
     title: row.title,
     instructions: row.instructions,
     folder:
-      row.folder_drive_id && row.folder_item_id
-        ? { driveId: row.folder_drive_id, itemId: row.folder_item_id, path: row.folder_path ?? '', webUrl: row.folder_web_url ?? undefined }
+      row.folder_id
+        ? { id: row.folder_id, path: row.folder_path ?? '', webUrl: row.folder_web_url ?? undefined }
         : null,
     expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
     maxSubmissions: row.max_submissions,
     fileRules: fileRulesOf(row),
     fields: fieldsOf(row),
-    showOneDriveLinks: row.show_onedrive_links === 1,
+    showDriveLinks: row.show_drive_links === 1,
   };
 }
 

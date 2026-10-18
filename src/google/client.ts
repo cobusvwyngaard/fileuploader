@@ -1,12 +1,11 @@
-// Minimal Microsoft Graph client. Access tokens never leave the Worker and are
-// never logged; neither are upload or download URLs returned by Graph.
+// Minimal Google API client (Drive + Sheets). Access tokens never leave the
+// Worker and are never logged; neither are resumable upload session URLs.
 import type { Env } from '../env';
 import { log } from '../log';
 import { getAccessToken } from './tokens';
 
-export const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
-export class GraphError extends Error {
+export class GoogleApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
@@ -20,16 +19,18 @@ export class GraphError extends Error {
   }
 }
 
-export interface GraphRequestOptions {
+export interface GoogleRequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   /** Return null instead of throwing on 404. */
   allow404?: boolean;
+  /** Return the raw Response instead of parsing JSON (caller handles status). */
+  raw?: boolean;
   /**
    * Whether repeating the request is harmless. Defaults to true for everything
    * except POST. Non-idempotent requests are only retried inline on 429, where
-   * Graph guarantees the request was not processed; other failures are left to
-   * the caller (e.g. the Excel sync, which checks for already-written rows).
+   * the request was rejected before processing; other failures are left to the
+   * caller (e.g. the report sync, which checks for already-written rows).
    */
   idempotent?: boolean;
 }
@@ -43,22 +44,24 @@ function retryAfterMs(res: Response): number | undefined {
   return Number.isFinite(secs) ? secs * 1000 : undefined;
 }
 
-export class GraphClient {
+export class GoogleClient {
   constructor(
     private readonly env: Env,
     private readonly maxInlineRetries = 2,
   ) {}
 
-  async request<T>(method: string, path: string, opts: GraphRequestOptions & { allow404: true }): Promise<T | null>;
-  async request<T>(method: string, path: string, opts?: GraphRequestOptions): Promise<T>;
-  async request<T>(method: string, path: string, opts: GraphRequestOptions = {}): Promise<T | null> {
+  /** `url` must be an absolute https://*.googleapis.com URL. */
+  async request<T>(method: string, url: string, opts: GoogleRequestOptions & { allow404: true }): Promise<T | null>;
+  async request<T>(method: string, url: string, opts?: GoogleRequestOptions): Promise<T>;
+  async request<T>(method: string, url: string, opts: GoogleRequestOptions = {}): Promise<T | null> {
+    if (!/^https:\/\/[a-z]+\.googleapis\.com\//.test(url)) throw new Error('Refusing to send a Google token to a non-Google URL');
     let forcedRefresh = false;
     const idempotent = opts.idempotent ?? method !== 'POST';
     for (let attempt = 0; ; attempt++) {
       const token = await getAccessToken(this.env, { forceRefresh: forcedRefresh && attempt > 0 });
       let res: Response;
       try {
-        res = await fetch(`${GRAPH_BASE}${path}`, {
+        res = await fetch(url, {
           method,
           headers: {
             Authorization: `Bearer ${token}`,
@@ -73,23 +76,27 @@ export class GraphClient {
           await sleep(500 * 2 ** attempt);
           continue;
         }
-        throw new GraphError(0, 'network_error', e instanceof Error ? e.message : 'Network error');
+        throw new GoogleApiError(0, 'network_error', e instanceof Error ? e.message : 'Network error');
       }
       if (res.status === 401 && !forcedRefresh) {
         forcedRefresh = true;
         continue;
       }
+      if (opts.raw && res.status !== 401) return res as unknown as T;
       if (res.status === 404 && opts.allow404) return null;
       if (res.status === 204) return null as T;
       if (res.ok) {
         const text = await res.text();
         return (text ? JSON.parse(text) : null) as T;
       }
-      const body = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
-      const err = new GraphError(res.status, body.error?.code ?? 'graph_error', body.error?.message ?? `Graph returned ${res.status}`, retryAfterMs(res));
+      const body = (await res.json().catch(() => ({}))) as { error?: { status?: string; message?: string; errors?: { reason?: string }[] } };
+      const reason = body.error?.errors?.[0]?.reason ?? body.error?.status ?? 'google_error';
+      // Google reports rate limiting as 403 with a rateLimitExceeded reason.
+      const status = res.status === 403 && /rateLimitExceeded|userRateLimitExceeded/.test(reason) ? 429 : res.status;
+      const err = new GoogleApiError(status, reason, body.error?.message ?? `Google API returned ${res.status}`, retryAfterMs(res));
       if (err.transient && (idempotent || res.status === 429) && attempt < this.maxInlineRetries) {
         const wait = Math.min(err.retryAfterMs ?? 1000 * 2 ** attempt, 5000);
-        log.warn({ event: 'graph_retry', graphStatus: res.status, graphCode: err.code, retryInMs: wait });
+        log.warn({ event: 'google_retry', apiStatus: err.status, apiCode: err.code, retryInMs: wait });
         await sleep(wait);
         continue;
       }
@@ -97,15 +104,17 @@ export class GraphClient {
     }
   }
 
-  /** Follows @odata.nextLink up to `maxPages`. */
-  async list<T>(path: string, maxPages = 10): Promise<T[]> {
+  /** Follows nextPageToken up to `maxPages`; `key` is the array property (e.g. "files"). */
+  async list<T>(url: string, key: string, maxPages = 10): Promise<T[]> {
     const out: T[] = [];
-    let next: string | undefined = path;
-    for (let page = 0; next && page < maxPages; page++) {
-      const res: { value: T[]; '@odata.nextLink'?: string } = await this.request('GET', next);
-      out.push(...res.value);
-      const link = res['@odata.nextLink'];
-      next = link?.startsWith(GRAPH_BASE) ? link.slice(GRAPH_BASE.length) : undefined;
+    let pageToken: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const u = new URL(url);
+      if (pageToken) u.searchParams.set('pageToken', pageToken);
+      const res: Record<string, unknown> & { nextPageToken?: string } = await this.request('GET', u.toString());
+      out.push(...((res[key] as T[] | undefined) ?? []));
+      pageToken = res.nextPageToken;
+      if (!pageToken) break;
     }
     return out;
   }

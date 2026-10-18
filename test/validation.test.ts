@@ -45,9 +45,9 @@ describe('field definitions', () => {
     expect(validateFieldDefinitions([{ label: 'X', key: 'x', type: 'text', required: true, options: ['a'] }]).join()).toMatch(/only dropdown/);
   });
 
-  it('prevents fields from colliding with standard Excel columns', () => {
+  it('prevents fields from colliding with standard report columns', () => {
     expect(validateFieldDefinitions([{ label: 'X', key: 'stored_filename', type: 'text', required: false }]).join()).toMatch(/clashes/);
-    expect(validateFieldDefinitions([{ label: 'X', key: 'x', type: 'text', required: false, excelColumn: 'Session_Title' }]).join()).toMatch(/clashes/);
+    expect(validateFieldDefinitions([{ label: 'X', key: 'x', type: 'text', required: false, column: 'Session_Title' }]).join()).toMatch(/clashes/);
   });
 });
 

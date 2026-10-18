@@ -33,7 +33,7 @@ export interface FileRow {
   status: FileStatus;
   failure_reason: string | null;
   drive_item_id: string | null;
-  onedrive_path: string | null;
+  drive_path: string | null;
   web_url: string | null;
   actual_size: number | null;
   content_type: string | null;

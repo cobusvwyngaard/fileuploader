@@ -1,10 +1,10 @@
-// Cron-triggered maintenance: Excel retries, abandoned uploads, token upkeep.
+// Cron-triggered maintenance: report-sheet retries, abandoned uploads, token upkeep.
 import { decryptString, encryptString, keyMaterial, needsReencryption } from './crypto';
 import { auditStatement } from './db/audit';
 import type { Env } from './env';
-import { processDueExcel } from './excel/sync';
+import { processDueReports } from './report/sync';
 import { log } from './log';
-import { keepConnectionAlive, NotConnectedError } from './microsoft/tokens';
+import { keepConnectionAlive, NotConnectedError } from './google/tokens';
 import { transitionStatement } from './state';
 
 /**
@@ -61,7 +61,7 @@ export async function runScheduled(env: Env, nowMs = Date.now()): Promise<void> 
   } catch (e) {
     if (!(e instanceof NotConnectedError)) log.error({ event: 'token_keepalive_failed', reason: e instanceof Error ? e.message : 'unknown' });
   }
-  const excel = await processDueExcel(env, 10);
+  const excel = await processDueReports(env, 10);
   await reencryptShareTokens(env).catch((e) => log.error({ event: 'reencrypt_failed', reason: e instanceof Error ? e.message : 'unknown' }));
   const abandoned = await expireAbandonedUploads(env, nowMs);
   await env.DB.prepare('DELETE FROM oauth_states WHERE expires_at < ?').bind(nowMs).run();

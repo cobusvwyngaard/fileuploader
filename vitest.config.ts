@@ -16,9 +16,8 @@ export default defineConfig(async () => {
             ACCESS_TEAM_DOMAIN: 'https://team.cloudflareaccess.com',
             ACCESS_AUD: 'test-aud',
             ADMIN_EMAILS: '',
-            MS_TENANT_ID: '11111111-2222-3333-4444-555555555555',
-            MS_CLIENT_ID: 'client-id',
-            MS_CLIENT_SECRET: 'client-secret',
+            GOOGLE_CLIENT_ID: 'client-id.apps.googleusercontent.com',
+            GOOGLE_CLIENT_SECRET: 'client-secret',
             // Test-only key (32 zero-ish bytes); never used outside tests.
             TOKEN_ENCRYPTION_KEY: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8',
           },

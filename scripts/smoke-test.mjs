@@ -71,10 +71,10 @@ if (!svcHeaders) {
   const html = await req('GET', '/admin/', { admin: true });
   check('admin dashboard loads through Access', html.status === 200 && (await html.text()).includes('id="root"'), `status ${html.status}`);
 
-  const status = await req('GET', '/api/admin/microsoft/status', { admin: true });
+  const status = await req('GET', '/api/admin/google/status', { admin: true });
   const st = status.status === 200 ? await status.json() : null;
   check('admin API reachable', !!st, `status ${status.status}`);
-  console.log(`INFO  Microsoft connection: ${st?.connection?.status ?? 'unknown'}; Excel table: ${st?.excelTarget ? st.excelTarget.tableName : 'not configured'}`);
+  console.log(`INFO  Google connection: ${st?.connection?.status ?? 'unknown'}; report sheet: ${st?.reportSheet ? st.reportSheet.spreadsheetName : 'not configured'}`);
 
   const expires = new Date(Date.now() + 2 * 3600_000).toISOString();
   const created = await req('POST', '/api/admin/sessions', {
@@ -90,7 +90,7 @@ if (!svcHeaders) {
         { label: 'Table number', key: 'table_number', type: 'text', required: true },
         { label: 'Description', key: 'description', type: 'textarea', required: false },
       ],
-      showOneDriveLinks: false,
+      showDriveLinks: false,
     },
   });
   const session = created.status === 201 ? (await created.json()).session : null;
@@ -108,26 +108,31 @@ if (!svcHeaders) {
     const draftView = await req('POST', '/api/public/session', { body: { token } });
     check('public link reports draft session as not published', draftView.status === 403 && (await draftView.json()).error?.code === 'not_published');
 
-    if (st?.connection?.status === 'connected' && st.excelTarget) {
-      // Publishing needs a destination folder; use the workbook's folder (the drive root by default).
-      const root = await req('GET', '/api/admin/drive/children?itemId=root', { admin: true });
-      const rootItem = root.status === 200 ? (await root.json()).current : null;
-      if (rootItem) {
+    if (st?.connection?.status === 'connected' && st.reportSheet) {
+      // Publishing needs a destination folder: reuse (or create) a "Smoke tests" folder.
+      const list = await req('GET', '/api/admin/drive/folders', { admin: true });
+      let folder = list.status === 200 ? (await list.json()).folders.find((f) => f.path === '/Smoke tests') : null;
+      if (!folder) {
+        const made = await req('POST', '/api/admin/drive/folders', { admin: true, body: { name: 'Smoke tests' } });
+        folder = made.status === 201 ? (await made.json()).folder : null;
+      }
+      check('destination folder available', !!folder);
+      if (folder) {
         const upd = await req('PUT', `/api/admin/sessions/${session.id}`, {
           admin: true,
-          body: { ...session, folder: { driveId: rootItem.driveId, itemId: rootItem.id, path: rootItem.path, webUrl: rootItem.webUrl } },
+          body: { ...session, folder: { id: folder.id, path: folder.path, webUrl: folder.webUrl } },
         });
         check('set destination folder', upd.status === 200, `status ${upd.status}`);
         const pub = await req('POST', `/api/admin/sessions/${session.id}/publish`, { admin: true, body: {} });
         const pubBody = await pub.json();
-        check('publish (validates folder and Excel mapping)', pub.status === 200, pub.status === 200 ? '' : pubBody.error?.message);
+        check('publish (validates folder and report columns)', pub.status === 200, pub.status === 200 ? '' : pubBody.error?.message);
         if (pub.status === 200) {
           const open = await req('POST', '/api/public/session', { body: { token } });
           check('published public link opens', open.status === 200 && (await open.json()).title === session.title);
         }
       }
     } else {
-      console.log('SKIP  publish checks (connect Microsoft and choose an Excel table first)');
+      console.log('SKIP  publish checks (connect Google and choose a report spreadsheet first)');
     }
 
     const close = await req('POST', `/api/admin/sessions/${session.id}/close`, { admin: true, body: {} });

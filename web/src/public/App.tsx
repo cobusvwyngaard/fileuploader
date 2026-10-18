@@ -173,7 +173,7 @@ export function App() {
           try {
             done = await requestJson<CompleteFileResponse>('POST', `/api/public/submissions/${saved.submissionId}/files/${fileId}/complete`, { secret: saved.secret });
           } catch (e) {
-            // OneDrive can take a moment to make a just-finished file visible.
+            // Drive can take a moment to make a just-finished file searchable.
             if (e instanceof HttpError && e.code === 'upload_incomplete' && i < 4) await sleep(1500 * (i + 1));
             else throw e;
           }

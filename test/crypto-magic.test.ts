@@ -14,7 +14,7 @@ describe('token encryption', () => {
   });
 
   it('binds ciphertext to its context', async () => {
-    const ct = await encryptString({ current: KEY_A }, 'x', 'ms_refresh_token:primary');
+    const ct = await encryptString({ current: KEY_A }, 'x', 'google_refresh_token:primary');
     await expect(decryptString({ current: KEY_A }, ct, 'share_token:abc')).rejects.toThrow();
   });
 

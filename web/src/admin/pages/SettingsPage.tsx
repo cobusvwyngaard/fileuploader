@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { STANDARD_EXCEL_COLUMNS } from '../../../../shared/constants';
-import { api, type BrowserItem, type ConnectionStatus } from '../api';
+import { STANDARD_REPORT_COLUMNS } from '../../../../shared/constants';
+import { api, type ConnectionStatus, type SheetTab } from '../api';
 import { Badge, errorMessage, ErrorAlert } from '../components/common';
-import { DrivePicker } from '../components/DrivePicker';
 import { fmtDate } from '../format';
 import { useLocation } from '../router';
 
 const CONNECT_RESULTS: Record<string, { ok: boolean; text: string }> = {
-  connected: { ok: true, text: 'Microsoft account connected.' },
-  access_denied: { ok: false, text: 'Consent was declined. An administrator may need to grant consent for the app in Microsoft Entra.' },
-  not_business_account: { ok: false, text: 'That account does not have OneDrive for Business. Sign in with your Microsoft 365 work account.' },
-  no_onedrive: { ok: false, text: 'That account has no OneDrive provisioned yet. Open OneDrive once in a browser, then try again.' },
+  connected: { ok: true, text: 'Google account connected.' },
+  access_denied: { ok: false, text: 'Access was declined on the Google consent screen.' },
+  drive_scope_missing: { ok: false, text: 'Google Drive access was not granted. Reconnect and tick the Google Drive permission on the consent screen.' },
   invalid_state: { ok: false, text: 'The sign-in attempt expired or did not match. Please try again.' },
-  invalid_client: { ok: false, text: 'Microsoft rejected the client credentials. Check MS_CLIENT_ID and MS_CLIENT_SECRET.' },
+  invalid_client: { ok: false, text: 'Google rejected the client credentials. Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.' },
+  redirect_uri_mismatch: { ok: false, text: 'The redirect URI is not registered on the Google OAuth client.' },
 };
 
 export function SettingsPage() {
@@ -20,11 +19,11 @@ export function SettingsPage() {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
-  const [workbook, setWorkbook] = useState<BrowserItem | null>(null);
-  const [tables, setTables] = useState<{ id: string; name: string }[] | null>(null);
-  const [tableId, setTableId] = useState('');
-  const [columns, setColumns] = useState<{ columns: string[]; mapping: { ok: boolean; errors: string[] } } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [newName, setNewName] = useState('Upload sessions report');
+  const [extraCols, setExtraCols] = useState('table_number, description');
+  const [sheetList, setSheetList] = useState<{ id: string; name: string }[] | null>(null);
+  const [chosen, setChosen] = useState<{ id: string; name: string; tabs: SheetTab[] } | null>(null);
   const [audit, setAudit] = useState<Awaited<ReturnType<typeof api.audit>>['entries']>([]);
 
   const load = useCallback(() => {
@@ -33,49 +32,49 @@ export function SettingsPage() {
   }, []);
   useEffect(load, [load]);
 
-  const result = url.searchParams.get('microsoft');
-  const resultInfo = result ? CONNECT_RESULTS[result] ?? { ok: false, text: `Microsoft sign-in failed (${result}).` } : null;
-
-  const chooseWorkbook = async (item: BrowserItem) => {
-    setPicking(false);
-    setWorkbook(item);
-    setTables(null);
-    setColumns(null);
-    setTableId('');
-    try {
-      const r = await api.tables(item.id);
-      setTables(r.tables);
-      if (r.tables.length === 1) await chooseTable(item, r.tables[0]!.id);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
-
-  const chooseTable = async (wb: BrowserItem, id: string) => {
-    setTableId(id);
-    setColumns(null);
-    if (!id) return;
-    try {
-      setColumns(await api.columns(wb.id, id));
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
-
-  const saveTarget = async () => {
-    if (!workbook || !tableId) return;
-    setError(null);
-    try {
-      await api.setExcelTarget(workbook.id, tableId);
-      setNotice('Excel workbook and table saved.');
-      setWorkbook(null);
-      load();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  };
-
+  const result = url.searchParams.get('google');
+  const resultInfo = result ? CONNECT_RESULTS[result] ?? { ok: false, text: `Google sign-in failed (${result}).` } : null;
   const conn = status?.connection;
+  const connected = conn?.status === 'connected';
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useTab = (spreadsheetId: string, tab: SheetTab) =>
+    run(async () => {
+      await api.setSheetTarget(spreadsheetId, tab.sheetId);
+      setChosen(null);
+      setSheetList(null);
+      setNotice(`Reporting to tab “${tab.title}”.`);
+      load();
+    });
+
+  const createSheet = () =>
+    run(async () => {
+      const extra = extraCols.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+      const { spreadsheet } = await api.createSpreadsheet(newName, extra);
+      const { tabs } = await api.tabs(spreadsheet.id);
+      await api.setSheetTarget(spreadsheet.id, tabs[0]!.sheetId);
+      setNotice(`Created “${spreadsheet.name}” in your Google Drive and selected it for reporting.`);
+      load();
+    });
+
+  const pickSheet = (id: string, name: string) =>
+    run(async () => {
+      const { tabs } = await api.tabs(id);
+      setChosen({ id, name, tabs });
+    });
+
   return (
     <>
       <h1>Settings</h1>
@@ -84,35 +83,36 @@ export function SettingsPage() {
       {notice && <div className="alert success" role="status">{notice}</div>}
 
       <div className="card">
-        <h2>Microsoft account</h2>
+        <h2>Google account</h2>
         {!status ? (
           <p role="status">Loading…</p>
         ) : (
           <>
-            {!status.configured.microsoft && (
-              <div className="alert warning">Microsoft Entra settings (MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET) are not configured on the Worker.</div>
+            {!status.configured.google && (
+              <div className="alert warning">Google OAuth settings (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET) are not configured on the Worker.</div>
             )}
             <dl className="kv">
               <dt>Status</dt>
               <dd><Badge value={conn!.status} /></dd>
-              {conn!.userPrincipalName && (<><dt>Account</dt><dd>{conn!.displayName} ({conn!.userPrincipalName})</dd></>)}
+              {conn!.email && (<><dt>Account</dt><dd>{conn!.email}</dd></>)}
               {conn!.connectedBy && (<><dt>Connected by</dt><dd>{conn!.connectedBy} on {fmtDate(conn!.connectedAt)}</dd></>)}
               {conn!.lastRefreshedAt && (<><dt>Token refreshed</dt><dd>{fmtDate(conn!.lastRefreshedAt)}</dd></>)}
               {conn!.lastError && (<><dt>Last error</dt><dd>{conn!.lastError}</dd></>)}
             </dl>
-            {status.sessionsOnOtherDrive > 0 && (
-              <div className="alert warning">{status.sessionsOnOtherDrive} open session(s) use a folder in a different OneDrive than the connected account. Choose their folders again.</div>
-            )}
+            <p className="small muted">The app can only see folders and spreadsheets it creates in this Google Drive (the drive.file permission).</p>
             <div className="row">
-              <a className="btn primary" href="/api/admin/microsoft/connect">{conn!.status === 'disconnected' ? 'Connect Microsoft account' : 'Reconnect'}</a>
+              <a className="btn primary" href="/api/admin/google/connect">{conn!.status === 'disconnected' ? 'Connect Google account' : 'Reconnect'}</a>
               {conn!.status !== 'disconnected' && (
                 <button
                   type="button"
                   className="btn danger"
                   onClick={async () => {
-                    if (!confirm('Disconnect? Uploads and Excel updates will stop until an account is connected again.')) return;
-                    await api.disconnect();
-                    load();
+                    if (!confirm('Disconnect? Access is revoked at Google, and uploads and report updates stop until an account is connected again.')) return;
+                    await run(async () => {
+                      const r = await api.disconnect();
+                      setNotice(r.revoked ? 'Disconnected and access revoked at Google.' : 'Disconnected. Google did not confirm revocation; remove access at myaccount.google.com → Security → Third-party connections.');
+                      load();
+                    });
                   }}
                 >
                   Disconnect
@@ -124,48 +124,70 @@ export function SettingsPage() {
       </div>
 
       <div className="card">
-        <h2>Excel reporting workbook</h2>
-        {status?.excelTarget ? (
+        <h2>Report spreadsheet</h2>
+        {status?.reportSheet ? (
           <dl className="kv">
-            <dt>Workbook</dt>
-            <dd>{status.excelTarget.workbookWebUrl ? <a href={status.excelTarget.workbookWebUrl} target="_blank" rel="noopener noreferrer">{status.excelTarget.workbookPath}</a> : status.excelTarget.workbookPath}</dd>
-            <dt>Table</dt>
-            <dd>{status.excelTarget.tableName}</dd>
+            <dt>Spreadsheet</dt>
+            <dd>{status.reportSheet.spreadsheetUrl ? <a href={status.reportSheet.spreadsheetUrl} target="_blank" rel="noopener noreferrer">{status.reportSheet.spreadsheetName}</a> : status.reportSheet.spreadsheetName}</dd>
+            <dt>Tab</dt>
+            <dd>{status.reportSheet.sheetTitle}</dd>
             <dt>Columns</dt>
-            <dd className="small">{status.excelTarget.columns.join(', ')}</dd>
+            <dd className="small">{status.reportSheet.columns.join(', ')}</dd>
             <dt>Pending / failed rows</dt>
-            <dd>{status.excelPending} / {status.excelFailed}</dd>
+            <dd>{status.reportPending} / {status.reportFailed}</dd>
           </dl>
         ) : (
-          <p className="muted">No workbook connected. Sessions cannot be published until one is.</p>
+          <p className="muted">No report spreadsheet yet. Sessions cannot be published until one is selected.</p>
         )}
-        <p className="small muted">The table must contain these columns: {STANDARD_EXCEL_COLUMNS.join(', ')}, plus one column per form field key.</p>
-        <button type="button" className="btn" disabled={conn?.status !== 'connected'} onClick={() => setPicking(true)}>
-          {status?.excelTarget ? 'Change workbook' : 'Choose workbook'}
-        </button>
-        {workbook && (
-          <div className="stack">
-            <h3>{workbook.path}</h3>
-            {tables && tables.length === 0 && <div className="alert warning">This workbook has no named tables. Create one (Insert → Table) with the required headers.</div>}
-            {tables && tables.length > 0 && (
-              <div className="field">
-                <label htmlFor="table">Table</label>
-                <select id="table" value={tableId} onChange={(e) => chooseTable(workbook, e.target.value)}>
-                  <option value="">Choose…</option>
-                  {tables.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
-            )}
-            {columns && (
-              columns.mapping.ok ? (
-                <div className="alert success">All standard columns found. Columns: {columns.columns.join(', ')}</div>
-              ) : (
-                <div className="alert error"><ul>{columns.mapping.errors.map((m) => <li key={m}>{m}</li>)}</ul></div>
-              )
-            )}
-            <button type="button" className="btn primary" disabled={!columns?.mapping.ok} onClick={saveTarget}>Use this table</button>
+        <p className="small muted">
+          Row 1 of the tab must contain these headers: {STANDARD_REPORT_COLUMNS.join(', ')}, plus one header per form-field key (for example table_number, description).
+        </p>
+
+        <fieldset disabled={!connected || busy} className="unstyled stack">
+          <h3>Create a new report spreadsheet</h3>
+          <div className="grid">
+            <div className="field">
+              <label htmlFor="sheet-name">Spreadsheet name</label>
+              <input id="sheet-name" type="text" maxLength={120} value={newName} onChange={(e) => setNewName(e.target.value)} />
+            </div>
+            <div className="field">
+              <label htmlFor="sheet-extra">Field columns to add</label>
+              <input id="sheet-extra" type="text" value={extraCols} onChange={(e) => setExtraCols(e.target.value)} aria-describedby="sheet-extra-hint" />
+              <p className="hint" id="sheet-extra-hint">Form-field keys, comma separated. You can add more headers in the sheet later.</p>
+            </div>
           </div>
-        )}
+          <button type="button" className="btn primary" onClick={createSheet}>Create spreadsheet</button>
+
+          <h3>Or use a spreadsheet this app created earlier</h3>
+          <button type="button" className="btn" onClick={() => run(async () => setSheetList((await api.spreadsheets()).spreadsheets))}>
+            List spreadsheets
+          </button>
+          {sheetList && (
+            <ul className="picker-list" aria-label="Spreadsheets">
+              {sheetList.length === 0 && <li className="muted"><span className="small">&nbsp;None found.</span></li>}
+              {sheetList.map((s) => (
+                <li key={s.id}>
+                  <button type="button" onClick={() => pickSheet(s.id, s.name)}><span aria-hidden="true">📊</span><span>{s.name}</span></button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {chosen && (
+            <div className="stack">
+              <h3>{chosen.name}: choose a tab</h3>
+              {chosen.tabs.map((t) => (
+                <div key={t.sheetId} className="row">
+                  <strong>{t.title}</strong>
+                  {t.missing.length ? (
+                    <span className="small error-text">Missing headers: {t.missing.join(', ')}</span>
+                  ) : (
+                    <button type="button" className="btn small primary" onClick={() => useTab(chosen.id, t)}>Use this tab</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </fieldset>
       </div>
 
       <div className="card">
@@ -186,8 +208,6 @@ export function SettingsPage() {
           </table>
         </div>
       </div>
-
-      {picking && <DrivePicker mode="workbook" onClose={() => setPicking(false)} onSelect={chooseWorkbook} />}
     </>
   );
 }

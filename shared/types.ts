@@ -6,14 +6,14 @@ export type FieldType = (typeof FIELD_TYPES)[number];
 export interface FieldDefinition {
   /** Human readable label shown on the public form. */
   label: string;
-  /** Stable internal key (snake_case). Also the default Excel column name. */
+  /** Stable internal key (snake_case). Also the default report column name. */
   key: string;
   type: FieldType;
   required: boolean;
   /** Options for `select` fields. */
   options?: string[];
-  /** Optional Excel column override. Defaults to `key`. */
-  excelColumn?: string;
+  /** Optional report-sheet column override. Defaults to `key`. */
+  column?: string;
   /** Optional helper text shown beneath the input. */
   helpText?: string;
 }
@@ -49,9 +49,9 @@ export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
 
 export type FileStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
 
+/** A Google Drive folder, identified by its stable file ID. */
 export interface DestinationFolder {
-  driveId: string;
-  itemId: string;
+  id: string;
   path: string;
   webUrl?: string;
 }
@@ -66,7 +66,7 @@ export interface SessionConfigInput {
   maxSubmissions: number | null;
   fileRules: FileRules;
   fields: FieldDefinition[];
-  showOneDriveLinks: boolean;
+  showDriveLinks: boolean;
 }
 
 export interface AdminSession extends SessionConfigInput {
@@ -81,11 +81,11 @@ export interface AdminSession extends SessionConfigInput {
   createdBy: string;
 }
 
-/** What the public upload page receives. Never contains folder or Excel details. */
+/** What the public upload page receives. Never contains folder or report details. */
 export interface PublicSessionView {
   title: string;
   instructions: string;
-  fields: Omit<FieldDefinition, 'excelColumn'>[];
+  fields: Omit<FieldDefinition, 'column'>[];
   fileRules: FileRules;
   expiresAt: string;
 }

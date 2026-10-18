@@ -19,12 +19,10 @@ export interface Env {
   /** Development only: email to treat as admin for requests to localhost. */
   DEV_ADMIN_EMAIL?: string;
 
-  /** Microsoft Entra directory (tenant) ID. Single-tenant: personal accounts cannot sign in. */
-  MS_TENANT_ID: string;
-  /** Application (client) ID of the Entra app registration. */
-  MS_CLIENT_ID: string;
-  /** Secret. Client secret value of the Entra app registration. */
-  MS_CLIENT_SECRET: string;
+  /** OAuth 2.0 client ID of the Google Cloud "Web application" client. */
+  GOOGLE_CLIENT_ID: string;
+  /** Secret. OAuth 2.0 client secret of that client. */
+  GOOGLE_CLIENT_SECRET: string;
   /** Secret. Base64-encoded 32-byte key for AES-256-GCM encryption of tokens. */
   TOKEN_ENCRYPTION_KEY: string;
   /** Secret, optional. Previous key, accepted for decryption during key rotation. */

@@ -9,7 +9,7 @@ import {
   MAX_OPTIONS,
   MAX_SHORT_FIELD_LENGTH,
   MAX_TITLE_LENGTH,
-  STANDARD_EXCEL_COLUMNS,
+  STANDARD_REPORT_COLUMNS,
 } from './constants';
 import { getExtension, normaliseExtension, stripPath } from './filenames';
 import {
@@ -29,8 +29,8 @@ export type FieldValues = Record<string, string | number>;
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-export function excelColumnFor(field: Pick<FieldDefinition, 'key' | 'excelColumn'>): string {
-  return (field.excelColumn?.trim() || field.key).trim();
+export function reportColumnFor(field: Pick<FieldDefinition, 'key' | 'column'>): string {
+  return (field.column?.trim() || field.key).trim();
 }
 
 /** Validates the admin-defined form fields. Returns a list of human readable errors. */
@@ -39,7 +39,7 @@ export function validateFieldDefinitions(fields: unknown): string[] {
   if (!Array.isArray(fields)) return ['Fields must be a list.'];
   if (fields.length > MAX_FIELDS) errors.push(`At most ${MAX_FIELDS} fields are allowed.`);
   const keys = new Set<string>();
-  const columns = new Set<string>(STANDARD_EXCEL_COLUMNS.map((c) => c.toLowerCase()));
+  const columns = new Set<string>(STANDARD_REPORT_COLUMNS.map((c) => c.toLowerCase()));
   fields.forEach((raw, i) => {
     const where = `Field ${i + 1}`;
     if (!isPlainObject(raw)) {
@@ -81,16 +81,16 @@ export function validateFieldDefinitions(fields: unknown): string[] {
     } else if (f.options !== undefined && (!Array.isArray(f.options) || f.options.length > 0)) {
       errors.push(`${where}: only dropdown fields can have options.`);
     }
-    if (f.excelColumn !== undefined && (typeof f.excelColumn !== 'string' || f.excelColumn.length > 255)) {
-      errors.push(`${where}: Excel column must be text (max 255 characters).`);
+    if (f.column !== undefined && (typeof f.column !== 'string' || f.column.length > 255)) {
+      errors.push(`${where}: report column must be text (max 255 characters).`);
     }
     if (f.helpText !== undefined && (typeof f.helpText !== 'string' || f.helpText.length > 500)) {
       errors.push(`${where}: help text must be at most 500 characters.`);
     }
     if (typeof f.key === 'string') {
-      const col = excelColumnFor(f as FieldDefinition).toLowerCase();
+      const col = reportColumnFor(f as FieldDefinition).toLowerCase();
       if (columns.has(col)) {
-        errors.push(`${where}: Excel column "${excelColumnFor(f as FieldDefinition)}" clashes with a standard or other field column.`);
+        errors.push(`${where}: report column "${reportColumnFor(f as FieldDefinition)}" clashes with a standard or other field column.`);
       }
       columns.add(col);
     }
@@ -112,7 +112,7 @@ export function validateFileRules(rules: unknown): string[] {
     }
   }
   if (!Number.isInteger(r.maxFileSizeBytes) || (r.maxFileSizeBytes as number) < 1 || (r.maxFileSizeBytes as number) > HARD_MAX_FILE_SIZE_BYTES) {
-    errors.push('Maximum file size must be between 1 byte and 250 GB.');
+    errors.push('Maximum file size must be between 1 byte and 50 GB.');
   }
   if (!Number.isInteger(r.maxFilesPerSubmission) || (r.maxFilesPerSubmission as number) < 1 || (r.maxFilesPerSubmission as number) > HARD_MAX_FILES_PER_SUBMISSION) {
     errors.push(`Maximum files per submission must be between 1 and ${HARD_MAX_FILES_PER_SUBMISSION}.`);
@@ -139,13 +139,13 @@ export function validateSessionConfig(
   let folder: SessionConfigInput['folder'] = null;
   if (i.folder != null) {
     const f = i.folder as unknown as Record<string, unknown>;
-    if (!isPlainObject(f) || typeof f.driveId !== 'string' || typeof f.itemId !== 'string' || typeof f.path !== 'string' || !f.driveId || !f.itemId) {
+    if (!isPlainObject(f) || typeof f.id !== 'string' || !/^[A-Za-z0-9_-]{10,100}$/.test(f.id) || typeof f.path !== 'string') {
       errors.push('Destination folder is invalid.');
     } else {
-      folder = { driveId: f.driveId, itemId: f.itemId, path: f.path, webUrl: typeof f.webUrl === 'string' ? f.webUrl : undefined };
+      folder = { id: f.id, path: f.path.slice(0, 500), webUrl: typeof f.webUrl === 'string' ? f.webUrl : undefined };
     }
   }
-  if (opts.forPublish && !folder) errors.push('Choose a OneDrive destination folder.');
+  if (opts.forPublish && !folder) errors.push('Choose a Google Drive destination folder.');
 
   let expiresAt: string | null = null;
   if (i.expiresAt != null) {
@@ -167,14 +167,14 @@ export function validateSessionConfig(
 
   errors.push(...validateFileRules(i.fileRules));
   errors.push(...validateFieldDefinitions(i.fields));
-  if (i.showOneDriveLinks !== undefined && typeof i.showOneDriveLinks !== 'boolean') errors.push('showOneDriveLinks must be true or false.');
+  if (i.showDriveLinks !== undefined && typeof i.showDriveLinks !== 'boolean') errors.push('showDriveLinks must be true or false.');
   if (errors.length) return { errors };
 
   const rules = i.fileRules as FileRules;
   const fields = (i.fields as FieldDefinition[]).map((f) => {
     const clean: FieldDefinition = { label: f.label.trim(), key: f.key, type: f.type, required: f.required };
     if (f.type === 'select') clean.options = (f.options ?? []).map((o) => o.trim());
-    if (f.excelColumn?.trim() && f.excelColumn.trim() !== f.key) clean.excelColumn = f.excelColumn.trim();
+    if (f.column?.trim() && f.column.trim() !== f.key) clean.column = f.column.trim();
     if (f.helpText?.trim()) clean.helpText = f.helpText.trim();
     return clean;
   });
@@ -192,7 +192,7 @@ export function validateSessionConfig(
         maxFilesPerSubmission: rules.maxFilesPerSubmission,
       },
       fields,
-      showOneDriveLinks: i.showOneDriveLinks === true,
+      showDriveLinks: i.showDriveLinks === true,
     },
   };
 }

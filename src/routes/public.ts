@@ -11,7 +11,7 @@ import type {
   SubmissionStatusResponse,
   UploadUrlResponse,
 } from '../../shared/types';
-import { validateDeclaredFiles, validateFieldValues } from '../../shared/validation';
+import { EXTENSION_MIME_TYPES, validateDeclaredFiles, validateFieldValues } from '../../shared/validation';
 import { randomReference, randomToken, sha256Hex, timingSafeEqual } from '../crypto';
 import { auditStatement } from '../db/audit';
 import {
@@ -26,17 +26,25 @@ import {
 } from '../db/sessions';
 import { getFile, getFiles, getSubmission, type FileRow, type SubmissionRow } from '../db/submissions';
 import { ApiError, badRequest } from '../errors';
-import { processSubmissionExcel } from '../excel/sync';
+import { processSubmissionReport } from '../report/sync';
 import { readJson, type AppEnv } from '../http';
 import { log } from '../log';
 import { checkContent, detectMime } from '../magic';
-import { DriveService } from '../microsoft/drive';
-import { GraphClient } from '../microsoft/graph';
-import { getConnection, NotConnectedError } from '../microsoft/tokens';
+import { GoogleClient } from '../google/client';
+import { DriveService, type DriveFile } from '../google/drive';
+import { getConnection, NotConnectedError } from '../google/tokens';
 import { rateLimit } from '../ratelimit';
 import { transitionStatement } from '../state';
 
 const MAX_UPLOAD_SESSIONS_PER_FILE = 20;
+/** Google expires resumable upload sessions after about a week. */
+const RESUMABLE_SESSION_LIFETIME_MS = 6 * 24 * 60 * 60 * 1000;
+
+/** Picks the uploaded file among same-named matches (normally exactly one). */
+function pickUploaded(files: DriveFile[], declaredSize: number): DriveFile | null {
+  const real = files.filter((f) => f.mimeType !== 'application/vnd.google-apps.folder');
+  return real.find((f) => Number(f.size) === declaredSize) ?? real[0] ?? null;
+}
 
 export const STATE_ERRORS: Record<string, ApiError> = {
   invalid: new ApiError(404, 'invalid_link', 'This upload link is not valid. Check that you have the complete link.'),
@@ -59,7 +67,7 @@ export function publicView(row: SessionRow): PublicSessionView {
   return {
     title: row.title,
     instructions: row.instructions,
-    fields: fieldsOf(row).map(({ excelColumn: _omit, ...f }) => f),
+    fields: fieldsOf(row).map(({ column: _omit, ...f }) => f),
     fileRules: fileRulesOf(row),
     expiresAt: new Date(row.expires_at!).toISOString(),
   };
@@ -79,7 +87,7 @@ async function authoriseFile(c: Context<AppEnv>, body: { secret?: unknown }): Pr
   const file = await getFile(c.env, sub.id, c.req.param('fileId') ?? '');
   if (!file) throw new ApiError(404, 'file_not_found', 'This file is not part of the submission.');
   const session = await getSession(c.env, sub.upload_session_id);
-  if (!session?.folder_drive_id || !session.folder_item_id) throw new ApiError(409, 'session_misconfigured', 'This upload link is not configured correctly.');
+  if (!session?.folder_id) throw new ApiError(409, 'session_misconfigured', 'This upload link is not configured correctly.');
   return { sub, file, session };
 }
 
@@ -179,29 +187,38 @@ publicRoutes.post('/submissions/:id/files/:fileId/upload-url', rateLimit('PUBLIC
   if (now > sub.upload_deadline) throw new ApiError(410, 'upload_window_closed', 'The time allowed to finish this upload has passed. Please start a new submission.');
   if (file.upload_attempts >= MAX_UPLOAD_SESSIONS_PER_FILE) throw new ApiError(429, 'too_many_attempts', 'This file has been restarted too many times. Please start a new submission.');
 
-  const drive = new DriveService(new GraphClient(c.env));
+  const drive = new DriveService(new GoogleClient(c.env));
   // A previous attempt may have finished even though the browser never heard back.
-  const existing = await drive.getChildByName(session.folder_drive_id!, session.folder_item_id!, file.stored_filename);
-  if (existing?.file) return c.json<UploadUrlResponse>({ alreadyUploaded: true });
+  if (pickUploaded(await drive.findInFolder(session.folder_id!, file.stored_filename), file.declared_size)) {
+    return c.json<UploadUrlResponse>({ alreadyUploaded: true });
+  }
 
-  const us = await drive.createUploadSession(session.folder_drive_id!, session.folder_item_id!, file.stored_filename);
-  const expires = Date.parse(us.expirationDateTime);
+  const ext = getExtension(file.stored_filename);
+  const uploadUrl = await drive.startResumableUpload({
+    folderId: session.folder_id!,
+    name: file.stored_filename,
+    size: file.declared_size,
+    // Server-chosen from the (validated) extension, not taken from the browser.
+    mimeType: EXTENSION_MIME_TYPES[ext]?.[0] ?? 'application/octet-stream',
+    origin: new URL(c.env.PUBLIC_BASE_URL).origin,
+  });
+  const expires = now + RESUMABLE_SESSION_LIFETIME_MS;
   await c.env.DB.batch([
     c.env.DB.prepare(
       `UPDATE submission_files SET status = 'uploading', failure_reason = NULL, upload_attempts = upload_attempts + 1,
          upload_session_expires_at = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'uploading', 'failed')`,
-    ).bind(Number.isFinite(expires) ? expires : null, now, file.id),
+    ).bind(expires, now, file.id),
     transitionStatement(c.env.DB, sub.id, ['created'], 'uploading', {}, now),
   ]);
   log.info({ event: 'upload_session_created', submissionId: sub.id, fileId: file.id, attempt: file.upload_attempts + 1 });
   c.header('Cache-Control', 'no-store');
-  return c.json<UploadUrlResponse>({ alreadyUploaded: false, uploadUrl: us.uploadUrl, expiresAt: us.expirationDateTime });
+  return c.json<UploadUrlResponse>({ alreadyUploaded: false, uploadUrl, expiresAt: new Date(expires).toISOString() });
 });
 
 publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_RATE_LIMITER', 'complete_file'), async (c) => {
   const body = await readJson<{ secret?: unknown }>(c, 4096);
   const { sub, file, session } = await authoriseFile(c, body);
-  const showLinks = session.show_onedrive_links === 1;
+  const showLinks = session.show_drive_links === 1;
   if (file.status === 'uploaded') {
     const latest = (await getSubmission(c.env, sub.id))!;
     return c.json<CompleteFileResponse>({ fileStatus: 'uploaded', submissionStatus: latest.status, ...(showLinks && file.web_url ? { webUrl: file.web_url } : {}) });
@@ -210,22 +227,22 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
     throw new ApiError(409, 'submission_closed', 'This submission is no longer accepting uploads.');
   }
 
-  const drive = new DriveService(new GraphClient(c.env));
-  const driveId = session.folder_drive_id!;
-  const folderId = session.folder_item_id!;
-  const item = await drive.getChildByName(driveId, folderId, file.stored_filename);
-  if (!item?.file) throw new ApiError(409, 'upload_incomplete', 'The upload has not finished yet.');
+  const drive = new DriveService(new GoogleClient(c.env));
+  const folderId = session.folder_id!;
+  const item = pickUploaded(await drive.findInFolder(folderId, file.stored_filename), file.declared_size);
+  if (!item) throw new ApiError(409, 'upload_incomplete', 'The upload has not finished yet.');
 
   const rules = fileRulesOf(session);
   const ext = getExtension(file.stored_filename);
+  const size = Number(item.size);
   let rejection: string | null = null;
-  if (item.parentReference?.id && item.parentReference.id !== folderId) rejection = 'wrong_folder';
-  else if (item.size !== file.declared_size) rejection = 'size_mismatch';
-  else if ((item.size ?? 0) > rules.maxFileSizeBytes) rejection = 'too_large';
+  if (!item.parents?.includes(folderId)) rejection = 'wrong_folder';
+  else if (size !== file.declared_size) rejection = 'size_mismatch';
+  else if (size > rules.maxFileSizeBytes) rejection = 'too_large';
   let contentCheck = 'unchecked';
   let detected: string | null = null;
   if (!rejection) {
-    const header = await drive.readHeader(driveId, item.id);
+    const header = await drive.readHeader(item.id);
     if (header) {
       contentCheck = checkContent(ext, header);
       detected = detectMime(header);
@@ -235,7 +252,7 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
 
   const now = Date.now();
   if (rejection) {
-    await drive.deleteItem(driveId, item.id);
+    await drive.trash(item.id);
     await c.env.DB.batch([
       c.env.DB.prepare("UPDATE submission_files SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?").bind(rejection, now, file.id),
       auditStatement(c.env, 'public', 'file.rejected', { type: 'submission', id: sub.id }, { fileId: file.id, reason: rejection }),
@@ -251,14 +268,14 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
   }
 
   const db = c.env.DB;
-  const contentType = item.file.mimeType || detected || file.declared_content_type || 'application/octet-stream';
+  const contentType = detected || item.mimeType || 'application/octet-stream';
   await db
     .prepare(
-      `UPDATE submission_files SET status = 'uploaded', drive_item_id = ?, onedrive_path = ?, web_url = ?, actual_size = ?,
+      `UPDATE submission_files SET status = 'uploaded', drive_item_id = ?, drive_path = ?, web_url = ?, actual_size = ?,
          content_type = ?, content_check = ?, failure_reason = NULL, updated_at = ?
        WHERE id = ? AND status IN ('pending', 'uploading', 'failed')`,
     )
-    .bind(item.id, joinDrivePath(session.folder_path ?? '', item.name), item.webUrl ?? null, item.size ?? null, contentType, contentCheck, now, file.id)
+    .bind(item.id, joinDrivePath(session.folder_path ?? '', item.name), item.webViewLink ?? null, size, contentType, contentCheck, now, file.id)
     .run();
 
   const remaining = await db
@@ -266,7 +283,7 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
     .bind(sub.id)
     .first<{ n: number }>();
   if (remaining?.n === 0) {
-    // All files verified: uploaded -> excel_pending in one transaction.
+    // All files verified: uploaded -> excel_pending (report step) in one transaction.
     const [, moved] = await db.batch([
       // 'created' only remains if every file was found already uploaded; step through 'uploading'.
       transitionStatement(db, sub.id, ['created'], 'uploading', {}, now),
@@ -274,11 +291,11 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
       transitionStatement(db, sub.id, ['uploaded'], 'excel_pending', { excel_next_attempt_at: now }, now),
     ]);
     // Concurrent completions of the last file all reach here; only the request
-    // that performed the transition records it and starts the Excel update.
+    // that performed the transition records it and starts the report update.
     if (moved?.meta.changes === 1) {
       await auditStatement(c.env, 'public', 'submission.uploaded', { type: 'submission', id: sub.id }, { sessionId: session.id }).run();
       c.executionCtx.waitUntil(
-        processSubmissionExcel(c.env, sub.id).catch((e) => log.error({ event: 'excel_inline_error', submissionId: sub.id, reason: e instanceof Error ? e.message : 'unknown' })),
+        processSubmissionReport(c.env, sub.id).catch((e) => log.error({ event: 'report_inline_error', submissionId: sub.id, reason: e instanceof Error ? e.message : 'unknown' })),
       );
     }
   }
@@ -287,7 +304,7 @@ publicRoutes.post('/submissions/:id/files/:fileId/complete', rateLimit('PUBLIC_R
   return c.json<CompleteFileResponse>({
     fileStatus: 'uploaded',
     submissionStatus: latest.status,
-    ...(showLinks && item.webUrl ? { webUrl: item.webUrl } : {}),
+    ...(showLinks && item.webViewLink ? { webUrl: item.webViewLink } : {}),
   });
 });
 
@@ -295,7 +312,7 @@ publicRoutes.post('/submissions/:id/status', rateLimit('PUBLIC_RATE_LIMITER', 's
   const body = await readJson<{ secret?: unknown }>(c, 4096);
   const sub = await authorise(c, body);
   const session = await getSession(c.env, sub.upload_session_id);
-  const showLinks = session?.show_onedrive_links === 1;
+  const showLinks = session?.show_drive_links === 1;
   const files = await getFiles(c.env, sub.id);
   return c.json<SubmissionStatusResponse>({
     reference: sub.reference,

@@ -1,38 +1,41 @@
-// Reports uploaded files to the Excel table. D1 is the source of truth; Excel
-// is a reporting copy that is brought up to date idempotently:
+// Reports uploaded files to the Google Sheets report. D1 is the source of
+// truth; the sheet is a reporting copy that is brought up to date idempotently.
+// (Internal names such as the `excel_pending` status and `excel_*` columns
+// predate the move from Excel to Google Sheets and refer to this report step.)
+//
 //
 // 1. A submission is claimed with a short lease (excel_lock_until) so only one
 //    worker processes it at a time.
 // 2. On any attempt after the first, existing stored_filename values are read
 //    back from the table. Files already present (e.g. the previous attempt
-//    timed out after Excel had written the rows) are marked inserted instead of
-//    being added again.
+//    timed out after Sheets had written the rows) are marked inserted instead of
+//    being appended again.
 // 3. Remaining rows are appended in one request, then D1 is updated.
 // 4. Failures reschedule with capped exponential backoff; after
-//    EXCEL_MAX_ATTEMPTS the submission is marked failed for an admin retry.
-import { EXCEL_MAX_ATTEMPTS, excelRetryDelayMs } from '../backoff';
-import { getExcelTarget } from '../db/excelTarget';
+//    REPORT_MAX_ATTEMPTS the submission is marked failed for an admin retry.
+import { REPORT_MAX_ATTEMPTS, reportRetryDelayMs } from '../backoff';
+import { getSheetTarget } from '../db/sheetTarget';
 import { fieldsOf, getSession } from '../db/sessions';
 import type { FileRow, SubmissionRow } from '../db/submissions';
 import type { Env } from '../env';
 import { log } from '../log';
-import { ExcelService } from '../microsoft/excel';
-import { GraphClient, GraphError } from '../microsoft/graph';
-import { NotConnectedError } from '../microsoft/tokens';
+import { GoogleApiError, GoogleClient } from '../google/client';
+import { SheetsService } from '../google/sheets';
+import { NotConnectedError } from '../google/tokens';
 import { transition } from '../state';
-import { buildExcelRows, validateExcelMapping } from './mapping';
+import { buildReportRows, validateReportMapping } from './mapping';
 
 export const EXCEL_LEASE_MS = 2 * 60 * 1000;
 
-export type ExcelOutcome = 'complete' | 'retry_scheduled' | 'failed' | 'skipped';
+export type ReportOutcome = 'complete' | 'retry_scheduled' | 'failed' | 'skipped';
 
-export interface ExcelSyncDeps {
-  excel?: Pick<ExcelService, 'listColumns' | 'readColumnValues' | 'addRows'>;
+export interface ReportSyncDeps {
+  sheets?: Pick<SheetsService, 'resolveTitle' | 'readHeader' | 'readColumn' | 'appendRows'>;
   now?: () => number;
   random?: () => number;
 }
 
-class PermanentExcelError extends Error {}
+class PermanentReportError extends Error {}
 
 async function claim(env: Env, submissionId: string, nowMs: number): Promise<SubmissionRow | null> {
   return env.DB.prepare(
@@ -45,20 +48,20 @@ async function claim(env: Env, submissionId: string, nowMs: number): Promise<Sub
 }
 
 function describe(e: unknown): string {
-  if (e instanceof GraphError) return `graph_${e.status}_${e.code}`;
+  if (e instanceof GoogleApiError) return `google_${e.status}_${e.code}`;
   if (e instanceof NotConnectedError) return e.reason;
   if (e instanceof Error) return e.message.slice(0, 200);
   return 'unknown_error';
 }
 
-export async function processSubmissionExcel(env: Env, submissionId: string, deps: ExcelSyncDeps = {}): Promise<ExcelOutcome> {
+export async function processSubmissionReport(env: Env, submissionId: string, deps: ReportSyncDeps = {}): Promise<ReportOutcome> {
   const now = deps.now ?? Date.now;
   const claimed = await claim(env, submissionId, now());
   if (!claimed) return 'skipped';
   const attempt = claimed.excel_attempts;
   try {
     const session = await getSession(env, claimed.upload_session_id);
-    if (!session) throw new PermanentExcelError('session_missing');
+    if (!session) throw new PermanentReportError('session_missing');
     const files = (
       await env.DB.prepare("SELECT * FROM submission_files WHERE submission_id = ? AND status = 'uploaded' ORDER BY file_index")
         .bind(submissionId)
@@ -66,30 +69,31 @@ export async function processSubmissionExcel(env: Env, submissionId: string, dep
     ).results;
     let pending = files.filter((f) => f.excel_status === 'pending');
     if (pending.length) {
-      const target = await getExcelTarget(env);
-      if (!target) throw new Error('excel_not_configured');
-      const excel = deps.excel ?? new ExcelService(new GraphClient(env));
-      const columns = await excel.listColumns(target.drive_id, target.item_id, target.table_id);
-      const names = columns.map((c) => c.name);
-      const mapping = validateExcelMapping(names, fieldsOf(session));
-      if (!mapping.ok) throw new Error(`excel_mapping_invalid: ${mapping.errors[0]}`);
+      const target = await getSheetTarget(env);
+      if (!target) throw new Error('report_sheet_not_configured');
+      const sheets = deps.sheets ?? new SheetsService(new GoogleClient(env));
+      const title = await sheets.resolveTitle(target.spreadsheet_id, target.sheet_id);
+      if (!title) throw new Error('report_sheet_missing');
+      const header = await sheets.readHeader(target.spreadsheet_id, title);
+      const mapping = validateReportMapping(header, fieldsOf(session));
+      if (!mapping.ok) throw new Error(`report_mapping_invalid: ${mapping.errors[0]}`);
 
       // excel_attempts only ever resets to 1 (admin retry), never 0, so any
       // attempt after the very first one checks for rows a previous attempt wrote.
       if (attempt > 1) {
-        const storedCol = columns.find((c) => c.name.trim().toLowerCase() === 'stored_filename')!;
-        const existing = new Set(await excel.readColumnValues(target.drive_id, target.item_id, target.table_id, storedCol.id));
+        const storedIdx = header.findIndex((c) => c.trim().toLowerCase() === 'stored_filename');
+        const existing = new Set(await sheets.readColumn(target.spreadsheet_id, title, storedIdx));
         const already = pending.filter((f) => existing.has(f.stored_filename));
         if (already.length) {
           await markInserted(env, already.map((f) => f.id), now());
-          log.info({ event: 'excel_duplicate_prevented', submissionId, count: already.length });
+          log.info({ event: 'report_duplicate_prevented', submissionId, count: already.length });
         }
         pending = pending.filter((f) => !existing.has(f.stored_filename));
       }
 
       if (pending.length) {
-        const rows = buildExcelRows(
-          names,
+        const rows = buildReportRows(
+          header,
           mapping,
           {
             reference: claimed.reference,
@@ -108,7 +112,7 @@ export async function processSubmissionExcel(env: Env, submissionId: string, dep
           })),
           'complete',
         );
-        await excel.addRows(target.drive_id, target.item_id, target.table_id, rows);
+        await sheets.appendRows(target.spreadsheet_id, title, rows);
         await markInserted(env, pending.map((f) => f.id), now());
       }
     }
@@ -118,12 +122,12 @@ export async function processSubmissionExcel(env: Env, submissionId: string, dep
       excel_next_attempt_at: null,
       excel_last_error: null,
     }, now());
-    if (done) log.info({ event: 'excel_complete', submissionId, attempt });
+    if (done) log.info({ event: 'report_complete', submissionId, attempt });
     return done ? 'complete' : 'skipped';
   } catch (e) {
     const reason = describe(e);
-    const permanent = e instanceof PermanentExcelError;
-    if (permanent || attempt >= EXCEL_MAX_ATTEMPTS) {
+    const permanent = e instanceof PermanentReportError;
+    if (permanent || attempt >= REPORT_MAX_ATTEMPTS) {
       await transition(env.DB, submissionId, ['excel_pending'], 'failed', {
         failure_stage: 'excel',
         failure_reason: reason,
@@ -131,17 +135,17 @@ export async function processSubmissionExcel(env: Env, submissionId: string, dep
         excel_lock_until: null,
         excel_next_attempt_at: null,
       }, now());
-      log.error({ event: 'excel_failed', submissionId, attempt, reason });
+      log.error({ event: 'report_failed', submissionId, attempt, reason });
       return 'failed';
     }
-    const delay = excelRetryDelayMs(attempt, deps.random);
+    const delay = reportRetryDelayMs(attempt, deps.random);
     await env.DB.prepare(
       `UPDATE submissions SET excel_last_error = ?, excel_next_attempt_at = ?, excel_lock_until = NULL, updated_at = ?
         WHERE id = ? AND status = 'excel_pending'`,
     )
       .bind(reason, now() + delay, now(), submissionId)
       .run();
-    log.warn({ event: 'excel_retry_scheduled', submissionId, attempt, retryInMs: delay, reason });
+    log.warn({ event: 'report_retry_scheduled', submissionId, attempt, retryInMs: delay, reason });
     return 'retry_scheduled';
   }
 }
@@ -160,7 +164,7 @@ async function markInserted(env: Env, fileIds: string[], nowMs: number): Promise
 }
 
 /** Processes due submissions. Called by the cron trigger. */
-export async function processDueExcel(env: Env, limit = 10, deps: ExcelSyncDeps = {}): Promise<Record<ExcelOutcome, number>> {
+export async function processDueReports(env: Env, limit = 10, deps: ReportSyncDeps = {}): Promise<Record<ReportOutcome, number>> {
   const nowMs = (deps.now ?? Date.now)();
   const due = await env.DB.prepare(
     `SELECT id FROM submissions WHERE status = 'excel_pending' AND (excel_next_attempt_at IS NULL OR excel_next_attempt_at <= ?)
@@ -168,9 +172,9 @@ export async function processDueExcel(env: Env, limit = 10, deps: ExcelSyncDeps 
   )
     .bind(nowMs, nowMs, limit)
     .all<{ id: string }>();
-  const counts: Record<ExcelOutcome, number> = { complete: 0, retry_scheduled: 0, failed: 0, skipped: 0 };
+  const counts: Record<ReportOutcome, number> = { complete: 0, retry_scheduled: 0, failed: 0, skipped: 0 };
   for (const { id } of due.results) {
-    counts[await processSubmissionExcel(env, id, deps)]++;
+    counts[await processSubmissionReport(env, id, deps)]++;
   }
   return counts;
 }

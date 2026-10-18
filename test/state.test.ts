@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { canTransition, predecessorsOf, transition, transitionStatement } from '../src/state';
-import { excelRetryDelayMs, EXCEL_RETRY_CAP_MS } from '../src/backoff';
+import { reportRetryDelayMs, REPORT_RETRY_CAP_MS } from '../src/backoff';
 import { resetDb } from './helpers';
 
 async function insertSubmission(id: string, status: string) {
@@ -55,14 +55,14 @@ describe('submission state machine', () => {
   });
 });
 
-describe('Excel retry backoff', () => {
+describe('report retry backoff', () => {
   it('grows exponentially and is capped', () => {
     const mid = () => 0.5; // no jitter
-    expect(excelRetryDelayMs(1, mid)).toBe(60_000);
-    expect(excelRetryDelayMs(2, mid)).toBe(120_000);
-    expect(excelRetryDelayMs(5, mid)).toBe(960_000);
-    expect(excelRetryDelayMs(30, mid)).toBe(EXCEL_RETRY_CAP_MS);
-    expect(excelRetryDelayMs(30, () => 1)).toBeLessThanOrEqual(EXCEL_RETRY_CAP_MS);
-    expect(excelRetryDelayMs(1, () => 0)).toBe(48_000);
+    expect(reportRetryDelayMs(1, mid)).toBe(60_000);
+    expect(reportRetryDelayMs(2, mid)).toBe(120_000);
+    expect(reportRetryDelayMs(5, mid)).toBe(960_000);
+    expect(reportRetryDelayMs(30, mid)).toBe(REPORT_RETRY_CAP_MS);
+    expect(reportRetryDelayMs(30, () => 1)).toBeLessThanOrEqual(REPORT_RETRY_CAP_MS);
+    expect(reportRetryDelayMs(1, () => 0)).toBe(48_000);
   });
 });

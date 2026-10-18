@@ -27,7 +27,7 @@
     }
   ],
 
-  // Excel retries (capped backoff), abandoned-upload cleanup and token keep-alive.
+  // Report-sheet retries (capped backoff), abandoned-upload cleanup and token keep-alive.
   "triggers": { "crons": ["*/5 * * * *"] },
 
   "ratelimits": [
@@ -35,7 +35,7 @@
     { "name": "SUBMIT_RATE_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
   ],
 
-  // Non-secret configuration. Secrets (MS_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY)
+  // Non-secret configuration. Secrets (GOOGLE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY)
   // are set with `wrangler secret put` and never committed.
   "vars": {
     "ENVIRONMENT": "production",
@@ -44,8 +44,7 @@
     "ACCESS_AUD": "",
     "ADMIN_EMAILS": "",
     "ADMIN_SERVICE_TOKENS": "",
-    "MS_TENANT_ID": "",
-    "MS_CLIENT_ID": ""
+    "GOOGLE_CLIENT_ID": ""
   },
 
   "observability": { "enabled": true }

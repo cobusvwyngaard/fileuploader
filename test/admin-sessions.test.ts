@@ -1,17 +1,17 @@
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { adminCall, call, createPublishedSession, FakeMicrosoft, resetDb, seedConnection, sessionConfig, withAccess } from './helpers';
+import { adminCall, call, createPublishedSession, FakeGoogle, FOLDER_ID, resetDb, seedConnection, sessionConfig, withAccess } from './helpers';
 
-let ms: FakeMicrosoft;
+let ms: FakeGoogle;
 beforeEach(async () => {
   await resetDb();
   await seedConnection();
-  ms = new FakeMicrosoft();
+  ms = new FakeGoogle();
   vi.spyOn(globalThis, 'fetch').mockImplementation(withAccess(ms.handler) as typeof fetch);
 });
 afterEach(() => vi.restoreAllMocks());
 
-type S = { session: { id: string; status: string; effectiveState: string; shareUrl: string; title: string; folder: { itemId: string } | null } };
+type S = { session: { id: string; status: string; effectiveState: string; shareUrl: string; title: string; folder: { id: string } | null } };
 
 describe('admin session lifecycle', () => {
   it('creates drafts, edits, publishes, unpublishes, duplicates and closes', async () => {
@@ -22,7 +22,7 @@ describe('admin session lifecycle', () => {
     // A draft without a folder cannot be published.
     expect((await adminCall('POST', `/sessions/${id}/publish`, {})).status).toBe(422);
     const edited = (await (await adminCall('PUT', `/sessions/${id}`, sessionConfig({ title: 'Edited' }))).json()) as S;
-    expect(edited.session).toMatchObject({ title: 'Edited', folder: { itemId: 'FOLDER1' } });
+    expect(edited.session).toMatchObject({ title: 'Edited', folder: { id: FOLDER_ID } });
 
     const pub = (await (await adminCall('POST', `/sessions/${id}/publish`, {})).json()) as S;
     expect(pub.session.effectiveState).toBe('open');
@@ -34,7 +34,7 @@ describe('admin session lifecycle', () => {
     expect(((await (await adminCall('POST', `/sessions/${id}/unpublish`, {})).json()) as S).session.status).toBe('unpublished');
 
     const dup = (await (await adminCall('POST', `/sessions/${id}/duplicate`, {})).json()) as S;
-    expect(dup.session).toMatchObject({ status: 'draft', title: 'Copy of Edited', folder: { itemId: 'FOLDER1' } });
+    expect(dup.session).toMatchObject({ status: 'draft', title: 'Copy of Edited', folder: { id: FOLDER_ID } });
     expect(dup.session.shareUrl).not.toBe(pub.session.shareUrl);
 
     expect(((await (await adminCall('POST', `/sessions/${id}/close`, {})).json()) as S).session.status).toBe('closed');

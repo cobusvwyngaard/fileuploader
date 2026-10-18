@@ -1,7 +1,7 @@
 import { MAX_ORIGINAL_FILENAME_LENGTH } from './constants';
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g;
-// Characters OneDrive/SharePoint reject, plus characters that are awkward in URLs and shells.
+// Characters that are unsafe in file systems (Windows/SharePoint), URLs and shells, so stored names stay portable when files are downloaded or synced.
 const UNSAFE_CHARS = /["*:<>?/\\|#%&{}~$!'`^+=;,@[\]()]/g;
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 const MAX_BASE_LENGTH = 80;
@@ -28,7 +28,7 @@ export function normaliseExtension(ext: string): string {
 
 /**
  * Cleans an original filename for display and storage in D1/Excel. This value is
- * never used as a OneDrive path; see {@link buildStoredFilename}.
+ * never used as a Drive file name; see {@link buildStoredFilename}.
  */
 export function cleanOriginalFilename(name: string): string {
   const cleaned = stripPath(name.normalize('NFC')).replace(CONTROL_CHARS, '').trim();
@@ -55,7 +55,7 @@ export function sanitiseBaseName(name: string): string {
 }
 
 /**
- * The name used in OneDrive. It is fully server-determined: a date, the
+ * The name used in Google Drive. It is fully server-determined: a date, the
  * submission reference and file index make it unique, so uploads never collide
  * and the Worker can find the file again by path without trusting the browser.
  */

@@ -2,8 +2,8 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { ApiError } from './errors';
 import type { Env } from './env';
 import { log } from './log';
-import { GraphError } from './microsoft/graph';
-import { NotConnectedError } from './microsoft/tokens';
+import { GoogleApiError } from './google/client';
+import { NotConnectedError } from './google/tokens';
 
 export type AppEnv = { Bindings: Env; Variables: { adminEmail: string } };
 
@@ -13,8 +13,8 @@ const PUBLIC_CSP = [
   "style-src 'self'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
-  // The browser PUTs file chunks straight to the Microsoft upload URL.
-  "connect-src 'self' https://*.sharepoint.com https://*.sharepoint.us https://*.sharepoint.de",
+  // The browser PUTs file chunks straight to the Google Drive resumable upload URL.
+  "connect-src 'self' https://www.googleapis.com",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'self'",
@@ -23,7 +23,7 @@ const PUBLIC_CSP = [
 
 const ADMIN_CSP = PUBLIC_CSP.replace(/connect-src [^;]+/, "connect-src 'self'").replace(
   "form-action 'self'",
-  "form-action 'self' https://login.microsoftonline.com",
+  "form-action 'self' https://accounts.google.com",
 );
 
 export function applySecurityHeaders(headers: Headers, kind: 'public' | 'admin' | 'api'): void {
@@ -94,12 +94,12 @@ export function errorResponse(c: Context<AppEnv>, err: unknown): Response {
     return c.json({ error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } }, err.status as 400);
   }
   if (err instanceof NotConnectedError) {
-    log.error({ event: 'microsoft_not_connected', route: c.req.routePath, reason: err.reason });
-    return c.json({ error: { code: 'microsoft_not_connected', message: 'The OneDrive connection is unavailable. Please try again later.' } }, 503);
+    log.error({ event: 'google_not_connected', route: c.req.routePath, reason: err.reason });
+    return c.json({ error: { code: 'storage_not_connected', message: 'File storage is temporarily unavailable. Please try again later.' } }, 503);
   }
-  if (err instanceof GraphError) {
-    log.error({ event: 'graph_error', route: c.req.routePath, graphStatus: err.status, graphCode: err.code });
-    return c.json({ error: { code: 'onedrive_error', message: 'OneDrive did not accept the request. Please try again shortly.' } }, err.transient ? 503 : 502);
+  if (err instanceof GoogleApiError) {
+    log.error({ event: 'google_api_error', route: c.req.routePath, apiStatus: err.status, apiCode: err.code });
+    return c.json({ error: { code: 'storage_error', message: 'Google Drive did not accept the request. Please try again shortly.' } }, err.transient ? 503 : 502);
   }
   log.error({ event: 'unhandled_error', route: c.req.routePath, reason: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown' });
   return c.json({ error: { code: 'internal_error', message: 'Something went wrong. Please try again.' } }, 500);

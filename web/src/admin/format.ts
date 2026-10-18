@@ -24,7 +24,7 @@ export const STATE_LABELS: Record<string, string> = {
   created: 'Created',
   uploading: 'Uploading',
   uploaded: 'Uploaded',
-  excel_pending: 'Excel pending',
+  excel_pending: 'Sheet pending',
   complete: 'Complete',
   failed: 'Failed',
   connected: 'Connected',

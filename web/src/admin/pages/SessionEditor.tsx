@@ -3,7 +3,7 @@ import type { AdminSession, SessionConfigInput } from '../../../../shared/types'
 import { validateSessionConfig } from '../../../../shared/validation';
 import { api } from '../api';
 import { Badge, errorMessage } from '../components/common';
-import { DrivePicker } from '../components/DrivePicker';
+import { FolderPicker } from '../components/FolderPicker';
 import { FIELD_PRESETS, FieldsEditor } from '../components/FieldsEditor';
 import { QrDialog } from '../components/QrDialog';
 import { fromLocalInput, toLocalInput } from '../format';
@@ -22,7 +22,7 @@ function defaults(): SessionConfigInput {
     maxSubmissions: null,
     fileRules: { allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'docx', 'xlsx'], maxFileSizeBytes: 100 * MB, maxFilesPerSubmission: 5 },
     fields: [FIELD_PRESETS[0]!, FIELD_PRESETS[1]!].map((f) => ({ ...f })),
-    showOneDriveLinks: false,
+    showDriveLinks: false,
   };
 }
 
@@ -102,7 +102,7 @@ export function SessionEditor({ id }: { id: string | null }) {
     setNotice(null);
     try {
       const r = await api.validateSession(id);
-      if (r.ok) setNotice('Ready to publish: the destination folder and Excel column mapping are valid.');
+      if (r.ok) setNotice('Ready to publish: the destination folder and report-sheet columns are valid.');
       else setErrors(r.errors);
     } catch (e) {
       setErrors([errorMessage(e)]);
@@ -190,7 +190,7 @@ export function SessionEditor({ id }: { id: string | null }) {
             {cfg.folder ? (
               <p>
                 <strong>{cfg.folder.path || '/'}</strong>{' '}
-                {cfg.folder.webUrl && <a href={cfg.folder.webUrl} target="_blank" rel="noopener noreferrer">Open in OneDrive</a>}
+                {cfg.folder.webUrl && <a href={cfg.folder.webUrl} target="_blank" rel="noopener noreferrer">Open in Google Drive</a>}
               </p>
             ) : (
               <p className="muted">No folder selected.</p>
@@ -224,19 +224,19 @@ export function SessionEditor({ id }: { id: string | null }) {
               </div>
             </div>
             <label className="checkbox">
-              <input type="checkbox" checked={cfg.showOneDriveLinks} onChange={(e) => set({ showOneDriveLinks: e.target.checked })} />
-              Show uploaders the OneDrive link to their own files (they will need access to open it)
+              <input type="checkbox" checked={cfg.showDriveLinks} onChange={(e) => set({ showDriveLinks: e.target.checked })} />
+              Show uploaders the Google Drive link to their own files (they will need access to open it)
             </label>
           </div>
 
           <div className="card">
             <h2>Form fields</h2>
-            <p className="muted small">Each field is written to the Excel column with the same name as its internal key, unless you set a different Excel column.</p>
+            <p className="muted small">Each field is written to the report-sheet column with the same name as its internal key, unless you set a different column.</p>
             <FieldsEditor fields={cfg.fields} onChange={(fields) => set({ fields })} />
           </div>
 
           <div className="row end">
-            {id && <button type="button" className="btn" onClick={check}>Check Excel mapping</button>}
+            {id && <button type="button" className="btn" onClick={check}>Check report columns</button>}
             <button type="submit" className="btn">Save</button>
             {session?.status !== 'published' && (
               <button type="button" className="btn primary" onClick={() => save(true)}>Save and publish</button>
@@ -246,11 +246,10 @@ export function SessionEditor({ id }: { id: string | null }) {
       </form>
 
       {picker && (
-        <DrivePicker
-          mode="folder"
+        <FolderPicker
           onClose={() => setPicker(false)}
           onSelect={(item) => {
-            set({ folder: { driveId: item.driveId, itemId: item.id, path: item.path, webUrl: item.webUrl } });
+            set({ folder: { id: item.id, path: item.path, webUrl: item.webUrl } });
             setPicker(false);
           }}
         />

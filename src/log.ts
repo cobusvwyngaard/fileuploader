@@ -2,7 +2,7 @@
 // primitive values are written; everything else is dropped.
 
 const ALLOWED_KEYS = new Set([
-  'event', 'route', 'status', 'code', 'graphCode', 'graphStatus', 'submissionId', 'sessionId',
+  'event', 'route', 'status', 'code', 'apiCode', 'apiStatus', 'submissionId', 'sessionId',
   'fileId', 'attempt', 'count', 'durationMs', 'reason', 'stage', 'admin', 'retryInMs', 'ok',
 ]);
 

@@ -77,8 +77,8 @@ export function FieldsEditor({ fields, onChange }: { fields: FieldDefinition[]; 
                 </select>
               </div>
               <div className="field">
-                <label htmlFor={`${id}-col`}>Excel column</label>
-                <input id={`${id}-col`} type="text" placeholder={f.key} value={f.excelColumn ?? ''} onChange={(e) => update(i, { excelColumn: e.target.value || undefined })} />
+                <label htmlFor={`${id}-col`}>Report column</label>
+                <input id={`${id}-col`} type="text" placeholder={f.key} value={f.column ?? ''} onChange={(e) => update(i, { column: e.target.value || undefined })} />
               </div>
             </div>
             {f.type === 'select' && (
