@@ -40,7 +40,7 @@
   "vars": {
     "ENVIRONMENT": "production",
     "PUBLIC_BASE_URL": "https://fileuploader.cobus-w.workers.dev",
-    "ACCESS_TEAM_DOMAIN": "https://example.cloudflareaccess.com",
+    "ACCESS_TEAM_DOMAIN": "https://shy-cell-6030.cloudflareaccess.com",
     "ACCESS_AUD": "",
     "ADMIN_EMAILS": "",
     "ADMIN_SERVICE_TOKENS": "",
