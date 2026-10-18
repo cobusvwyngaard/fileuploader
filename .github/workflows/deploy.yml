@@ -1,0 +1,74 @@
+name: Deploy
+
+on:
+  push:
+    branches: [claude/lucid-volta-wv42bj, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 007e56c5506810c0046185978bb4d89c
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check Cloudflare token is configured
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Repository secret CLOUDFLARE_API_TOKEN is not set (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:web
+
+      - name: Resolve workers.dev URL
+        run: |
+          sub=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain // empty')
+          if [ -z "$sub" ]; then
+            echo "::error::No workers.dev subdomain registered. Open Workers & Pages in the Cloudflare dashboard once to choose one."
+            exit 1
+          fi
+          echo "PUBLIC_BASE_URL=https://fileuploader.$sub.workers.dev" >> "$GITHUB_ENV"
+          echo "Public URL: https://fileuploader.$sub.workers.dev"
+
+      - name: Ensure D1 database
+        run: node scripts/ci-ensure-d1.mjs
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply DB --remote
+
+      - name: Deploy Worker
+        run: npx wrangler deploy --var "PUBLIC_BASE_URL:$PUBLIC_BASE_URL"
+
+      - name: Ensure encryption key secret
+        run: |
+          if npx wrangler secret list --format json | jq -e '.[] | select(.name == "TOKEN_ENCRYPTION_KEY")' > /dev/null; then
+            echo "TOKEN_ENCRYPTION_KEY already set"
+          else
+            echo "Generating TOKEN_ENCRYPTION_KEY (value is never printed)"
+            node scripts/generate-key.mjs
+          fi
+          echo "Secrets present:"; npx wrangler secret list --format json | jq -r '.[].name'
+
+      - name: Smoke test
+        run: |
+          sleep 10
+          SMOKE_BASE_URL="$PUBLIC_BASE_URL" node scripts/smoke-test.mjs
