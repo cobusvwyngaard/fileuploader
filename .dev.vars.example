@@ -1,0 +1,15 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit .dev.vars.
+# In production, set the secrets with `wrangler secret put <NAME>` and the
+# non-secret values in wrangler.jsonc "vars".
+ENVIRONMENT=
+PUBLIC_BASE_URL=
+DEV_ADMIN_EMAIL=
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUD=
+ADMIN_EMAILS=
+ADMIN_SERVICE_TOKENS=
+MS_TENANT_ID=
+MS_CLIENT_ID=
+MS_CLIENT_SECRET=
+TOKEN_ENCRYPTION_KEY=
+TOKEN_ENCRYPTION_KEY_PREVIOUS=

@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fileuploader",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+
+  // Built React apps (vite build -> dist/client). Requests for /api/* and /admin/*
+  // always run the Worker first so admin HTML is gated by the Access JWT check.
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/api/*", "/admin", "/admin/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fileuploader",
+      // Replace with the id printed by `wrangler d1 create fileuploader`.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Excel retries (capped backoff), abandoned-upload cleanup and token keep-alive.
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  "ratelimits": [
+    { "name": "PUBLIC_RATE_LIMITER", "namespace_id": "4101", "simple": { "limit": 120, "period": 60 } },
+    { "name": "SUBMIT_RATE_LIMITER", "namespace_id": "4102", "simple": { "limit": 10, "period": 60 } }
+  ],
+
+  // Non-secret configuration. Secrets (MS_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY)
+  // are set with `wrangler secret put` and never committed.
+  "vars": {
+    "ENVIRONMENT": "production",
+    "PUBLIC_BASE_URL": "https://fileuploader.example.workers.dev",
+    "ACCESS_TEAM_DOMAIN": "https://example.cloudflareaccess.com",
+    "ACCESS_AUD": "",
+    "ADMIN_EMAILS": "",
+    "ADMIN_SERVICE_TOKENS": "",
+    "MS_TENANT_ID": "",
+    "MS_CLIENT_ID": ""
+  },
+
+  "observability": { "enabled": true }
+}
